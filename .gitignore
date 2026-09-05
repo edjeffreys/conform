@@ -1,0 +1,9 @@
+# Built binary. Named for the module, so it collides with the repo root.
+/conform
+
+# Written into the working directory by conform.local.yaml, and by a local
+# trial run that keeps its sample files in ./media. Anchored: an unanchored
+# media/ would also match internal/media.
+/.conform-tmp/
+/.conform-state/
+/media/
