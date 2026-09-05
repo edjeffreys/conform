@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -62,6 +63,19 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 
 	if p.Action == plan.ActionNone {
 		res.Outcome = OutcomeSkipped
+		return res, nil
+	}
+
+	// Checked before encoding as well as at commit time: the collision is
+	// usually visible up front, and catching it here saves a transcode whose
+	// result could not be committed anyway.
+	//
+	// Deliberately not recorded as an excuse. The obstruction is another file,
+	// so it can be cleared without this one's size or mtime ever changing —
+	// and an excuse keyed on those would outlive the condition that caused it.
+	if detail, ok := destinationFree(src, p.Container); !ok {
+		res.Outcome = OutcomeFailed
+		res.Detail = detail
 		return res, nil
 	}
 
@@ -149,10 +163,15 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 // filesystem, which is atomic; the temp dir is usually a different volume, so
 // renaming straight from it would not be.
 func (r *Runner) replace(tmp, src, container string) (string, error) {
-	dir := filepath.Dir(src)
-	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
-	final := filepath.Join(dir, base+media.Ext(container))
-	staging := filepath.Join(dir, "."+base+".conform"+media.Ext(container))
+	final := finalPath(src, container)
+	if detail, ok := destinationFree(src, container); !ok {
+		return "", errors.New(detail)
+	}
+
+	// Named from a hash of the source path rather than its basename: two files
+	// differing only by extension share a basename, and would otherwise stage
+	// to the same path and clobber one another.
+	staging := filepath.Join(filepath.Dir(src), ".conform-"+pathHash(src)+media.Ext(container))
 
 	if err := copyFile(tmp, staging); err != nil {
 		os.Remove(staging)
@@ -219,9 +238,38 @@ func (r *Runner) tempPath(src, container string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
+	return filepath.Join(dir, "conform-"+pathHash(src)+media.Ext(container)), nil
+}
+
+// finalPath is where src ends up once rewritten into container. A container
+// change moves the file to a new extension, so this is not always src.
+func finalPath(src, container string) string {
+	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+	return filepath.Join(filepath.Dir(src), base+media.Ext(container))
+}
+
+// destinationFree reports whether src can be rewritten into container without
+// destroying something else. A container change targets a different name, and
+// that name may already hold an unrelated file the planner deliberately left
+// alone — renaming over it would be silent data loss.
+func destinationFree(src, container string) (string, bool) {
+	final := finalPath(src, container)
+	if final == src {
+		return "", true
+	}
+	switch _, err := os.Lstat(final); {
+	case err == nil:
+		return fmt.Sprintf("%s already exists and is not this file", filepath.Base(final)), false
+	case os.IsNotExist(err):
+		return "", true
+	default:
+		return err.Error(), false
+	}
+}
+
+func pathHash(src string) string {
 	sum := sha256.Sum256([]byte(src))
-	name := fmt.Sprintf("conform-%s%s", hex.EncodeToString(sum[:8]), media.Ext(container))
-	return filepath.Join(dir, name), nil
+	return hex.EncodeToString(sum[:8])
 }
 
 // runFFmpeg returns the tail of stderr on failure. ffmpeg writes progress
