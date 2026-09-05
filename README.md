@@ -1,11 +1,11 @@
 # conform
 
-A declarative replacement for Tdarr: bring a media library into line with a
-profile written in git, with no GUI and no database of jobs.
+Bring a media library into line with a profile written in git — no GUI, no
+database of jobs.
 
-Not deployed yet — this is the program and its container, built to be tried
-locally first. There is no `kubernetes/conform/` or `flux/apps/conform.yaml`,
-and nothing here touches the cluster.
+> **Status:** the reconciler, its tests and a container image. The Kubernetes
+> orchestrator, Helm chart and web UI described in [Distribution](#distribution)
+> are designed but not yet built. What is here works standalone today.
 
 ## Why not Tdarr
 
@@ -42,12 +42,12 @@ profile is retried forever. Two cases hit it —
 - the re-encode comes out *larger* than the source, so keeping the original is
   the better outcome and the change is rejected.
 
-Both are recorded in `conform-state.json` as excuses, alongside a probe cache.
-Every record is keyed on the file's size and mtime, so replacing the file at a
-path discards its excuse with it — a new download is judged on its own merits,
-never on its predecessor's.
+Both are recorded as excuses, alongside a probe cache. Every record is keyed on
+the file's size and mtime, so replacing the file at a path discards its excuse
+with it — a new download is judged on its own merits, never on its
+predecessor's.
 
-## Trying it locally
+## Trying it
 
 Needs Go and ffmpeg. `conform.local.yaml` uses `libx265` and a `./media`
 directory, so it runs anywhere:
@@ -55,10 +55,10 @@ directory, so it runs anywhere:
 ```sh
 go build -o conform ./cmd/conform
 
-./conform probe media/some-file.mkv      # what conform sees
-./conform plan  -config conform.local.yaml   # what it would do; touches nothing
-./conform apply -config conform.local.yaml   # do it
-./conform plan  -config conform.local.yaml   # must now be a no-op
+./conform probe media/some-file.mkv           # what conform sees
+./conform plan  -config conform.local.yaml    # what it would do; touches nothing
+./conform apply -config conform.local.yaml    # do it
+./conform plan  -config conform.local.yaml    # must now be a no-op
 ```
 
 `plan` is read-only and always safe. `apply -dry-run` goes through the apply
@@ -69,8 +69,8 @@ Run the tests with `go test ./...`.
 
 ## Config
 
-`conform.example.yaml` is the homelab shape (QuickSync, NFS paths).
-`conform.local.yaml` is the same rules with a software encoder.
+`conform.local.yaml` is a software-encoder profile that runs anywhere.
+`conform.example.yaml` is the same rules against Intel QuickSync.
 
 Every rule is a predicate on what is **acceptable**, never an instruction to
 act. A file satisfying all of them is left alone. Rules left empty impose no
@@ -98,9 +98,10 @@ Options are emitted with a full stream specifier (`-crf:v:0`, not `-crf`), so a
 profile stays correct on a file with more than one video track. Keys are sorted,
 so a given profile always produces byte-identical arguments.
 
-`execution.tempDir` must not be a Longhorn volume: a transcode writes a full
-working copy of every file it processes, and Longhorn would put two replicas of
-that on the single Proxmox physical disk. Same reasoning as `tdarr/cache-pvc.yaml`.
+`execution.tempDir` needs room for one source-sized file per concurrent worker,
+and should not be replicated network storage: a transcode writes a full working
+copy of everything it processes, so a replicated volume multiplies that write by
+its replica count.
 
 ### Choices worth knowing about
 
@@ -121,7 +122,7 @@ that on the single Proxmox physical disk. Same reasoning as `tdarr/cache-pvc.yam
 The original is never opened for writing. conform encodes to `tempDir`, verifies,
 copies the result into the source's *own* directory as a hidden staging file, and
 renames over the original — a rename within one filesystem, which is atomic. The
-temp directory is usually a different volume, so renaming straight from it would
+temp directory is often a different volume, so renaming straight from it would
 not be.
 
 A container change writes the new extension and removes the old file afterwards,
@@ -138,25 +139,20 @@ Check 3 is the important one. It is direct proof that the file now conforms,
 and therefore that the next pass will leave it alone. If it fails, the profile
 is unsatisfiable rather than the file being bad, and the message says so.
 
-## Deploying it later
+## Distribution
 
-The pieces that exist: the program, its tests, and a `Dockerfile` targeting
-QuickSync. The QSV path is **untested** — it needs the real iGPU, so the base
-image and driver setup are a best effort until it runs on `talos-worker-0`.
+*Designed, not yet built.* One transcode is one ffmpeg process and splitting a
+single file across workers is rarely worth it, so conform parallelises across
+files instead.
 
-Still to do when it moves to the cluster:
+Rather than ship a scheduler, conform uses Kubernetes as the queue: an
+orchestrator plans the library and creates one Job per non-conformant file,
+and the cluster scheduler places it. A profile carries its own placement
+requirements — device resources, node selectors, tolerations — which conform
+passes through without interpreting, so a job needing a specific encoder can
+only ever land somewhere that has one.
 
-- a build workflow, copying `.github/workflows/build-claude-agent.yaml` — it
-  builds against the in-cluster buildkitd and needs no checkout;
-- `kubernetes/conform/` with a namespace, the media PV/PVC, an `nfs` cache PVC,
-  a `configMapGenerator` for `conform.yaml`, and `network-policy.yaml`
-  (`allow-dns` only — conform talks to nothing);
-- `flux/apps/conform.yaml`;
-- **an i915 device**, which the cluster does not currently have spare. The
-  plugin advertises `gpu.intel.com/i915: 2` and plex and tdarr-node hold one
-  each, so either `sharedDevNum` goes to 3 in
-  `kubernetes/intel-gpu/daemonset.yaml` or tdarr-node scales to 0. Without one
-  the pod sits `Pending` with no other symptom.
+## Licence
 
-The module path is already `github.com/edjeffreys/conform`, so moving this
-directory to its own repo is a `git mv` with no import rewrites.
+MIT. Note that the QuickSync image variant includes Intel's `non-free` VA-API
+driver from Debian, which carries its own terms.
