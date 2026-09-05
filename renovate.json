@@ -1,0 +1,15 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "description": "semanticCommits is pinned rather than left at 'auto': auto-detection infers the convention from recent commits, and a young repo gives it nothing to read.",
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "semanticCommitScope": "deps",
+  "packageRules": [
+    {
+      "description": "The Dockerfile's Go version and go.mod must move together, or the image builds against a toolchain the module does not declare.",
+      "matchPackageNames": ["golang", "go"],
+      "groupName": "go toolchain"
+    }
+  ]
+}
