@@ -1,5 +1,5 @@
-# Target shape for the homelab: QuickSync on the node holding the passed-through
-# iGPU. See conform.local.yaml for a software-encoder version to test with.
+# Intel QuickSync profile. See conform.local.yaml for a software-encoder
+# version that runs anywhere.
 
 libraries:
   - name: movies
@@ -48,13 +48,14 @@ profiles:
       codecs: [subrip, ass, hdmv_pgs_subtitle]
 
 execution:
-  # Never longhorn: a transcode writes a full working copy of every file, and
-  # longhorn would put two replicas of it on the one Proxmox physical disk.
+  # Needs room for one source-sized file per worker. Avoid replicated storage:
+  # a transcode writes a full working copy of everything it processes, and a
+  # replicated volume multiplies that write by its replica count.
   tempDir: /temp
   stateDir: /config
   workers: 1
-  # The shared NFS export is uid/gid 3000 throughout; a file left owned by
-  # anyone else silently loses the arr stack its write access.
+  # chown replaced files. Needed where other applications share the library and
+  # expect a fixed uid/gid — a rewritten file otherwise lands owned by conform.
   owner:
     uid: 3000
     gid: 3000
