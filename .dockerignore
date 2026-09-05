@@ -1,3 +1,10 @@
+.git/
+.github/
+*.md
+LICENSE
+renovate.json
+
+# Runtime directories from a local trial run.
 .conform-tmp/
 .conform-state/
 media/
