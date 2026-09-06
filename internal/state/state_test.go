@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// An excuse describes the file that was at a path, not the path itself.
-// Replacing the file must clear it, or a genuinely new download inherits the
-// previous one's verdict and is never processed.
+// An excuse describes the file that was at a path, not the path itself, or a
+// new download inherits the previous one's verdict and is never processed.
 func TestChangedFileForgetsItsExcuse(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

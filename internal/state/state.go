@@ -1,13 +1,9 @@
-// Package state persists the two things that cannot be derived from the
-// library itself.
+// Package state holds the probe cache and the excuse ledger.
 //
-// The reconcile is otherwise stateless — a file's own streams are the record
-// of whether it conforms — but two cases would never converge without a
-// ledger. A file ffmpeg cannot process would be retried on every pass forever,
-// and so would one whose re-encode comes out larger than the source and is
-// therefore rejected. Both are recorded here as excuses, and both are
-// forgotten the moment the file's size or mtime changes, because that means a
-// genuinely different file now sits at that path.
+// The reconcile is otherwise stateless. Excuses exist only for files that
+// would never converge — ffmpeg cannot process them, or the re-encode comes
+// out larger — and are keyed on size and mtime, so a replaced file is judged
+// fresh.
 package state
 
 import (
@@ -25,8 +21,7 @@ type Record struct {
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"modTime"`
 
-	// Probe caches the observed state, so a rescan of a large library costs
-	// one stat per unchanged file instead of one ffprobe.
+	// Cached so a rescan costs one stat per unchanged file, not one ffprobe.
 	Probe *media.File `json:"probe,omitempty"`
 
 	Failures    int       `json:"failures,omitempty"`
@@ -57,17 +52,15 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(data, &s.records); err != nil {
-		// A corrupt state file costs a full re-probe, which is slow but
-		// correct. Refusing to start would be worse: nothing here is
-		// authoritative, so there is nothing to recover.
+		// Nothing here is authoritative, so a corrupt file costs a re-probe
+		// and nothing else.
 		s.records = map[string]*Record{}
 	}
 	return s, nil
 }
 
-// Get returns the record for path only if it still describes the file now at
-// that path. A changed size or mtime discards the cached probe, the failure
-// count and any excuse together — they all described the previous file.
+// A changed size or mtime discards the cached probe, the failure count and any
+// excuse together — they all described the previous file.
 func (s *Store) Get(path string, size int64, mod time.Time) *Record {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -90,8 +83,8 @@ func (s *Store) Put(path string, r *Record) {
 	s.dirty = true
 }
 
-// Forget drops a path outright, used after a file is replaced: the new file
-// must be probed fresh rather than inherit the old one's history.
+// Forget is called after a replace: the new file must not inherit the old
+// one's history.
 func (s *Store) Forget(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -99,8 +92,7 @@ func (s *Store) Forget(path string) {
 	s.dirty = true
 }
 
-// Prune removes records for paths no longer present in the library, so a
-// long-lived state file does not grow without bound as media is deleted.
+// Prune keeps a long-lived state file from growing as media is deleted.
 func (s *Store) Prune(seen map[string]bool) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -117,8 +109,8 @@ func (s *Store) Prune(seen map[string]bool) int {
 	return n
 }
 
-// Save writes the store out via a temp file and a rename, so a crash mid-write
-// leaves the previous state intact rather than a truncated file.
+// Written via a temp file and a rename, so a crash mid-write leaves the
+// previous state intact rather than a truncated file.
 func (s *Store) Save() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -67,8 +67,7 @@ func TestActions(t *testing.T) {
 }
 
 // The output of a transcode must itself be conformant, or a scheduled run
-// re-encodes the same files forever. This is the property the runner verifies
-// at execution time; here it is checked against the planner directly.
+// re-encodes the same files forever.
 func TestConvergence(t *testing.T) {
 	nonconformant := file("avi",
 		vid("h264", 2160),
@@ -99,8 +98,7 @@ func TestAudioLanguageFilterNeverEmptiesAFile(t *testing.T) {
 	}
 }
 
-// Cover art is a video stream to ffprobe. Judging it as one would mark every
-// file carrying a poster as needing a re-encode of a single still frame.
+// Cover art is a video stream to ffprobe.
 func TestCoverArtIsCarriedNotJudged(t *testing.T) {
 	art := media.Stream{Type: media.Video, Codec: "mjpeg", Height: 1500, AttachedPic: true}
 	f := file("mkv", vid("hevc", 1080), art, aud("aac", "eng", 2))
@@ -123,8 +121,8 @@ func TestDownmixSetsChannelCount(t *testing.T) {
 	}
 }
 
-// Every codec option must carry a full stream specifier, or a file with two
-// video tracks has the profile applied to both.
+// Without a full stream specifier, a file with two video tracks has the
+// profile applied to both.
 func TestFFmpegArgsAreStreamSpecific(t *testing.T) {
 	f := file("mkv", vid("h264", 2160), aud("truehd", "eng", 8), sub("subrip", "eng"))
 	args := strings.Join(Build(f, profile()).FFmpegArgs("in.mkv", "out.mkv"), " ")
@@ -141,8 +139,8 @@ func TestFFmpegArgsAreStreamSpecific(t *testing.T) {
 	}
 }
 
-// Options come from a map; without sorting, the command line would differ
-// between runs and no two invocations would be reproducible.
+// Options come from a map, so without sorting the command line would differ
+// between runs.
 func TestFFmpegArgsAreDeterministic(t *testing.T) {
 	f := file("mkv", vid("h264", 1080), aud("truehd", "eng", 8))
 	first := strings.Join(Build(f, profile()).FFmpegArgs("in", "out"), " ")

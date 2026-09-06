@@ -51,11 +51,12 @@ Decided, so it does not need re-deriving. Not all of it is built yet.
 
 ## Conventions
 
-**Comments explain why, not what — 2 to 4 lines, the non-obvious fact only.**
-State the constraint the next reader could not get from the code, then stop. No
-error transcripts, no failure chains, no restating the line below. A comment
-that repeats its own line is noise crowding out the ones that carry
-information.
+**Comment only where the behaviour is unintuitive.** The default is no
+comment: a reader who can follow the code does not need it narrated. Write one
+only when the code would look wrong, arbitrary or accidental without it — then
+state that fact in one or two lines and stop. No restating the line below, no
+doc comments that only expand the identifier's name, no error transcripts. A
+comment that repeats its own line crowds out the ones that carry information.
 
 **Conventional Commits**, for commits and PR titles alike: `<type>(<scope>):
 <subject>`, imperative mood, lower case after the colon. Types: `feat`, `fix`,
