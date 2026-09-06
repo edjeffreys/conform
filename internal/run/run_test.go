@@ -22,8 +22,6 @@ func read(t *testing.T, path string) string {
 	return string(b)
 }
 
-// A dual-format release — Film.mkv already conformant, Film.mp4 not — must not
-// end with the .mp4's transcode written over the .mkv.
 func TestReplaceRefusesToOverwriteUnrelatedFile(t *testing.T) {
 	dir := t.TempDir()
 	bystander := filepath.Join(dir, "Film.mkv")
@@ -140,8 +138,6 @@ func TestDestinationFree(t *testing.T) {
 	}
 }
 
-// Staging names key on the whole path, not the basename, so two files that
-// differ only by extension cannot stage to the same place.
 func TestPathHashDistinguishesExtensions(t *testing.T) {
 	if pathHash("/media/Film.mkv") == pathHash("/media/Film.mp4") {
 		t.Error("paths differing only by extension hash alike")
