@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -65,6 +66,15 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 		return res, nil
 	}
 
+	// Not an excuse: the obstruction is another file, so it can be cleared
+	// without this one's size or mtime changing, and the excuse would outlive
+	// its cause. Repeated at commit time, to catch one appearing mid-encode.
+	if detail, ok := destinationFree(src, p.Container); !ok {
+		res.Outcome = OutcomeFailed
+		res.Detail = detail
+		return res, nil
+	}
+
 	tmp, err := r.tempPath(src, p.Container)
 	if err != nil {
 		return res, err
@@ -80,8 +90,6 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 		return r.fail(src, p, res, fmt.Sprintf("ffmpeg: %v: %s", err, out)), nil
 	}
 
-	// Verification is what makes an in-place rewrite safe. Anything short of
-	// a fully conformant, complete output leaves the original untouched.
 	if detail, ok := r.verify(ctx, p, prof, tmp); !ok {
 		return r.reject(src, p, res, detail), nil
 	}
@@ -107,10 +115,8 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 	return res, nil
 }
 
-// verify re-probes the encode and re-plans it against the same profile. The
-// second plan must come back as ActionNone: that is the direct proof the file
-// now conforms, and it is also what guarantees the next pass will leave it
-// alone rather than encoding it again forever.
+// The second plan must come back ActionNone. That is the direct proof the file
+// now conforms, and therefore that the next pass will leave it alone.
 func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, tmp string) (string, bool) {
 	out, err := r.Prober.Probe(ctx, tmp)
 	if err != nil {
@@ -129,9 +135,8 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 		return fmt.Sprintf("output still does not satisfy the profile (%s) — the profile is likely unsatisfiable, not the file", again), false
 	}
 
-	// Size is judged only on a re-encode. A remux can grow slightly from
-	// container overhead alone, and rejecting it on that basis would refuse a
-	// change that costs nothing and is wanted regardless.
+	// A remux can grow from container overhead alone, so refusing it on size
+	// would block a change that costs nothing.
 	if p.Action == plan.ActionTranscode && p.File.Size > 0 {
 		info, err := os.Stat(tmp)
 		if err != nil {
@@ -144,15 +149,17 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 	return "", true
 }
 
-// replace moves the verified encode over the original. The staging copy is
-// made in the source's own directory so the final step is a rename within one
-// filesystem, which is atomic; the temp dir is usually a different volume, so
-// renaming straight from it would not be.
+// Staged in the source's own directory so the commit is a rename within one
+// filesystem, which is atomic; the temp dir is usually a different volume.
 func (r *Runner) replace(tmp, src, container string) (string, error) {
-	dir := filepath.Dir(src)
-	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
-	final := filepath.Join(dir, base+media.Ext(container))
-	staging := filepath.Join(dir, "."+base+".conform"+media.Ext(container))
+	final := finalPath(src, container)
+	if detail, ok := destinationFree(src, container); !ok {
+		return "", errors.New(detail)
+	}
+
+	// Hashed from the whole source path: two files differing only by extension
+	// share a basename, and would otherwise stage to the same place.
+	staging := filepath.Join(filepath.Dir(src), ".conform-"+pathHash(src)+media.Ext(container))
 
 	if err := copyFile(tmp, staging); err != nil {
 		os.Remove(staging)
@@ -168,9 +175,8 @@ func (r *Runner) replace(tmp, src, container string) (string, error) {
 		os.Remove(staging)
 		return "", fmt.Errorf("commit over source: %w", err)
 	}
-	// A container change moves the file to a new extension, leaving the
-	// original behind. Removing it after the rename rather than before means
-	// a crash in between leaves two copies, never zero.
+	// Removed after the rename, not before, so a crash in between leaves two
+	// copies rather than none.
 	if final != src {
 		if err := os.Remove(src); err != nil {
 			return final, fmt.Errorf("remove superseded %s: %w", filepath.Base(src), err)
@@ -198,9 +204,8 @@ func (r *Runner) fail(src string, p *plan.Plan, res Result, detail string) Resul
 	return res
 }
 
-// reject records a verified-but-unacceptable result. Unlike a failure this is
-// excused immediately: retrying produces the same output, so the only thing a
-// second attempt buys is the GPU time.
+// Excused immediately, unlike a failure: retrying produces the same output, so
+// a second attempt buys nothing but GPU time.
 func (r *Runner) reject(src string, p *plan.Plan, res Result, detail string) Result {
 	r.Store.Put(src, &state.Record{
 		Size: p.File.Size, ModTime: p.File.ModTime, Probe: p.File,
@@ -219,14 +224,38 @@ func (r *Runner) tempPath(src, container string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	sum := sha256.Sum256([]byte(src))
-	name := fmt.Sprintf("conform-%s%s", hex.EncodeToString(sum[:8]), media.Ext(container))
-	return filepath.Join(dir, name), nil
+	return filepath.Join(dir, "conform-"+pathHash(src)+media.Ext(container)), nil
 }
 
-// runFFmpeg returns the tail of stderr on failure. ffmpeg writes progress
-// there too, so the whole stream is mostly noise; the last lines are where the
-// actual error is.
+func finalPath(src, container string) string {
+	base := strings.TrimSuffix(filepath.Base(src), filepath.Ext(src))
+	return filepath.Join(filepath.Dir(src), base+media.Ext(container))
+}
+
+// A container change targets a different name, which may already hold an
+// unrelated file the planner deliberately left alone.
+func destinationFree(src, container string) (string, bool) {
+	final := finalPath(src, container)
+	if final == src {
+		return "", true
+	}
+	switch _, err := os.Lstat(final); {
+	case err == nil:
+		return fmt.Sprintf("%s already exists and is not this file", filepath.Base(final)), false
+	case os.IsNotExist(err):
+		return "", true
+	default:
+		return err.Error(), false
+	}
+}
+
+func pathHash(src string) string {
+	sum := sha256.Sum256([]byte(src))
+	return hex.EncodeToString(sum[:8])
+}
+
+// Only the tail of stderr: ffmpeg writes progress there too, so the rest is
+// noise.
 func runFFmpeg(ctx context.Context, bin string, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	var stderr strings.Builder
@@ -250,9 +279,8 @@ func copyFile(src, dst string) error {
 		out.Close()
 		return err
 	}
-	// Fsync before the rename: without it the rename can be durable while the
-	// contents are not, which on a crash leaves a valid-looking empty file
-	// where the original used to be.
+	// Without this the rename can be durable while the contents are not,
+	// leaving a valid-looking empty file where the original was.
 	if err := out.Sync(); err != nil {
 		out.Close()
 		return err
