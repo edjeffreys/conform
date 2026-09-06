@@ -14,7 +14,6 @@ const (
 	Subtitle = "subtitle"
 )
 
-// File is the observed state of one media file.
 type File struct {
 	Path      string    `json:"path"`
 	Size      int64     `json:"size"`
@@ -24,8 +23,8 @@ type File struct {
 	Streams   []Stream  `json:"streams"`
 }
 
-// Stream is one elementary stream. Fields not applicable to a stream's type
-// are left zero rather than omitted, so the planner never has to type-assert.
+// Fields not applicable to a stream's type are left zero, so the planner
+// never has to type-assert.
 type Stream struct {
 	Index    int    `json:"index"`
 	Type     string `json:"type"`
@@ -43,12 +42,9 @@ type Stream struct {
 	Forced  bool `json:"forced,omitempty"`
 
 	// AttachedPic marks cover art, which ffprobe reports as a video stream.
-	// Treating it as video would make every file with a poster look like it
-	// needs a re-encode, so the planner skips these entirely.
 	AttachedPic bool `json:"attachedPic,omitempty"`
 }
 
-// Of returns the streams of a given type, in file order.
 func (f *File) Of(kind string) []Stream {
 	var out []Stream
 	for _, s := range f.Streams {
@@ -59,10 +55,8 @@ func (f *File) Of(kind string) []Stream {
 	return out
 }
 
-// containerAliases maps ffprobe's comma-joined format_name lists onto the
-// single name used in config. ffprobe reports one demuxer for several
-// containers ("matroska,webm", "mov,mp4,m4a,3gp,3g2,mj2"), so the raw value
-// can never be compared to a config string directly.
+// ffprobe reports one demuxer for several containers ("matroska,webm"), so
+// format_name can never be compared to a config string directly.
 var containerAliases = []struct {
 	needle string
 	name   string
@@ -84,16 +78,14 @@ func normaliseContainer(formatName string) string {
 			}
 		}
 	}
-	// Fall back to the first reported demuxer rather than guessing, so an
-	// unrecognised container shows up in plan output instead of silently
-	// matching or mismatching the profile.
+	// The first reported demuxer rather than a guess, so an unrecognised
+	// container shows up in plan output.
 	if i := strings.Index(formatName, ","); i > 0 {
 		return formatName[:i]
 	}
 	return formatName
 }
 
-// Ext is the file extension a container should be written with.
 func Ext(container string) string {
 	return "." + container
 }

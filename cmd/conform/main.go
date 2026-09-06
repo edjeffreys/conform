@@ -1,10 +1,8 @@
 // Command conform brings a media library into line with a declared profile.
 //
-// It is a reconciler, not a job queue: the desired state is a profile in a
-// config file, the observed state is what ffprobe reports about each file, and
-// the action is whatever closes the gap. Nothing about a file's history is
-// consulted to decide whether it needs work, so the plan is a pure function of
-// the library and the config, and running it twice is a no-op.
+// It is a reconciler, not a job queue: nothing about a file's history decides
+// whether it needs work, so the plan is a pure function of the library and the
+// config, and running it twice is a no-op.
 package main
 
 import (
@@ -88,7 +86,6 @@ Flags for apply only:
 `)
 }
 
-// session is the shared setup for plan and apply.
 type session struct {
 	cfg     *config.Config
 	prober  *media.Prober
@@ -119,8 +116,8 @@ type item struct {
 	plan *plan.Plan
 }
 
-// collect probes every file in scope and plans it. Files whose probe is
-// cached and unchanged cost a stat; the rest cost an ffprobe.
+// A file whose cached probe still matches its size and mtime costs a stat
+// here; the rest cost an ffprobe.
 func (s *session) collect(ctx context.Context, includeExcused bool) ([]item, *tally, error) {
 	var items []item
 	t := &tally{}
@@ -317,8 +314,7 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
 	}
 
 	// A worker that hits a fatal error stops reading, so the send below would
-	// block forever on a context that is still live. Cancelling is what lets
-	// the loop unwind instead of deadlocking.
+	// block forever on a live context.
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

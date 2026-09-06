@@ -50,11 +50,9 @@ func TestLoadNormalises(t *testing.T) {
 func TestLoadRejects(t *testing.T) {
 	tests := map[string]string{
 		"undefined profile": strings.Replace(valid, "profile: standard", "profile: nope", 1),
-		// A rule that constrains video but names no encoder plans a transcode
-		// it cannot emit, so it must fail at load rather than per-file.
+		// Constraining video with no encoder plans a transcode it cannot emit.
 		"constraint with no encoder": strings.Replace(valid, "      encoder: {name: libx265}\n", "", 1),
-		// KnownFields: a mistyped rule name silently disables the rule, which
-		// is the worst possible failure for a declarative config.
+		// A mistyped rule name would silently disable the rule.
 		"unknown field": strings.Replace(valid, "maxHeight", "max_height", 1),
 		"no libraries":  "profiles:\n  standard:\n    container: mkv\n",
 	}

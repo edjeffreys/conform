@@ -10,8 +10,7 @@ import (
 	"strings"
 )
 
-// Prober runs ffprobe. The binary is a field so a caller can point at a
-// specific build; tests substitute a fixture reader instead.
+// Binary is a field so a caller can point at a specific ffprobe build.
 type Prober struct {
 	Binary string
 }
@@ -45,8 +44,8 @@ type rawStream struct {
 	Disposition map[string]int    `json:"disposition"`
 }
 
-// Probe describes a single file. The returned File carries the size and mtime
-// observed at probe time, which is what the state cache keys on.
+// The returned File carries the size and mtime observed at probe time, which
+// is what the state cache keys on.
 func (p *Prober) Probe(ctx context.Context, path string) (*File, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -102,9 +101,8 @@ func (p *Prober) Probe(ctx context.Context, path string) (*File, error) {
 	return f, nil
 }
 
-// language normalises the stream language tag. An absent tag becomes "und",
-// the ISO 639-2 code for undetermined, so profile rules only ever compare
-// against real codes and a missing tag can be matched explicitly.
+// An absent tag becomes "und", so rules only ever compare against real codes
+// and a missing tag can be matched explicitly.
 func language(tags map[string]string) string {
 	l := strings.ToLower(strings.TrimSpace(tags["language"]))
 	if l == "" {

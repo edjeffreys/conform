@@ -17,12 +17,10 @@ import (
 type Action string
 
 const (
-	// ActionNone means the file already satisfies the profile.
 	ActionNone Action = "none"
-	// ActionRemux rewrites the container and stream selection without
+	// ActionRemux rewrites container and stream selection without
 	// re-encoding — seconds per file, no GPU time.
-	ActionRemux Action = "remux"
-	// ActionTranscode re-encodes at least one stream.
+	ActionRemux     Action = "remux"
 	ActionTranscode Action = "transcode"
 )
 
@@ -68,14 +66,11 @@ func (p *Plan) transcodes() bool {
 	return false
 }
 
-// Build compares f against prof and returns the plan to bring it into line.
 func Build(f *media.File, prof config.Profile) *Plan {
 	p := &Plan{File: f, Container: prof.Container, OutputArgs: prof.OutputArgs}
 
-	// Cover art is reported as a video stream. It is carried through
-	// untouched and never measured against the video rules — judging it as
-	// video would mark every file with an embedded poster as needing a
-	// re-encode of a single still frame.
+	// Cover art is a video stream to ffprobe. Judging it as one would mark
+	// every file with a poster as needing a re-encode of one still frame.
 	var realVideo []media.Stream
 	for _, s := range f.Streams {
 		if s.Type == media.Video && s.AttachedPic {
@@ -93,8 +88,8 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	p.planAudio(f.Of(media.Audio), prof.Audio)
 	p.planSubtitles(f.Of(media.Subtitle), prof.Subtitles)
 
-	// Sort by source index so output stream order matches input order; the
-	// video/audio/subtitle passes above append out of order.
+	// The passes above append out of order; output stream order should match
+	// input order.
 	slices.SortStableFunc(p.Streams, func(a, b StreamPlan) int { return a.Source - b.Source })
 
 	if f.Container != prof.Container {
@@ -103,8 +98,8 @@ func Build(f *media.File, prof config.Profile) *Plan {
 
 	switch {
 	case len(realVideo) == 0:
-		// Not a video file, or one this tool cannot reason about. Rewriting
-		// it on container grounds alone would be a change with no benefit.
+		// Rewriting on container grounds alone would be a change with no
+		// benefit.
 		p.Action = ActionNone
 		p.Reasons = []string{"no video stream"}
 	case p.transcodes():
@@ -147,10 +142,8 @@ func planVideo(s media.Stream, rules config.VideoRules, p *Plan) StreamPlan {
 }
 
 func (p *Plan) planAudio(streams []media.Stream, rules config.AudioRules) {
-	// Decide language keeps first. A language filter that matches nothing
-	// would leave a silent file, so in that case the filter is ignored
-	// entirely and every stream is kept — a mis-tagged library should not be
-	// quietly stripped of its audio.
+	// A language filter matching nothing is ignored rather than obeyed: a
+	// mis-tagged file must not be stripped of its only audio.
 	keep := make([]bool, len(streams))
 	kept := 0
 	for i, s := range streams {
@@ -202,9 +195,8 @@ func (p *Plan) planSubtitles(streams []media.Stream, rules config.SubtitleRules)
 			p.Dropped = append(p.Dropped, Dropped{Source: s.Index, Type: s.Type,
 				Reason: fmt.Sprintf("language %s not kept", s.Language)})
 		case len(rules.Codecs) > 0 && !slices.Contains(rules.Codecs, s.Codec):
-			// Dropped, never converted: turning an image-based format into a
-			// text one needs OCR, and guessing at it silently corrupts
-			// subtitles rather than failing visibly.
+			// Dropped, never converted: image-based to text needs OCR, and
+			// guessing corrupts subtitles silently rather than failing.
 			p.Dropped = append(p.Dropped, Dropped{Source: s.Index, Type: s.Type,
 				Reason: fmt.Sprintf("codec %s not in %s", s.Codec, strings.Join(rules.Codecs, "/"))})
 		default:

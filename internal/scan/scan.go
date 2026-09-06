@@ -15,14 +15,13 @@ type Entry struct {
 	Info fs.FileInfo
 }
 
-// Walk returns every file under lib.Path matching its extension list and not
-// matching any exclude pattern, in lexical order so runs are reproducible.
+// Walk returns matching files in lexical order, so runs are reproducible.
 func Walk(lib config.Library) ([]Entry, error) {
 	var out []Entry
 	err := filepath.WalkDir(lib.Path, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			// A single unreadable directory should not abort the library —
-			// on NFS this is usually a transient mount or permission blip.
+			// One unreadable directory should not abort the library; on NFS
+			// this is usually a transient blip.
 			if d != nil && d.IsDir() {
 				return fs.SkipDir
 			}
@@ -30,8 +29,7 @@ func Walk(lib config.Library) ([]Entry, error) {
 		}
 		name := d.Name()
 		if d.IsDir() {
-			// Hidden directories, and the sidecar directories NAS software
-			// scatters through media trees, hold no media worth planning.
+			// Sidecar directories NAS software scatters through media trees.
 			if path != lib.Path && (strings.HasPrefix(name, ".") || name == "@eaDir" || name == "lost+found") {
 				return fs.SkipDir
 			}
