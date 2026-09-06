@@ -186,19 +186,9 @@ func (r *Runner) replace(tmp, src, container string) (string, error) {
 }
 
 func (r *Runner) fail(src string, p *plan.Plan, res Result, detail string) Result {
-	rec := r.Store.Get(src, p.File.Size, p.File.ModTime)
-	if rec == nil {
-		rec = &state.Record{Size: p.File.Size, ModTime: p.File.ModTime, Probe: p.File}
+	if err := r.Store.Fail(src, p.File.Size, p.File.ModTime, detail, r.Exec.MaxFailures); err != nil {
+		detail = fmt.Sprintf("%s (and recording the failure failed: %v)", detail, err)
 	}
-	rec.Failures++
-	rec.LastError = detail
-	rec.LastAttempt = time.Now()
-	if rec.Failures >= r.Exec.MaxFailures {
-		rec.Excused = true
-		rec.ExcuseReason = fmt.Sprintf("failed %d times, last: %s", rec.Failures, truncate(detail, 200))
-	}
-	r.Store.Put(src, rec)
-
 	res.Outcome = OutcomeFailed
 	res.Detail = detail
 	return res
@@ -207,10 +197,9 @@ func (r *Runner) fail(src string, p *plan.Plan, res Result, detail string) Resul
 // Excused immediately, unlike a failure: retrying produces the same output, so
 // a second attempt buys nothing but GPU time.
 func (r *Runner) reject(src string, p *plan.Plan, res Result, detail string) Result {
-	r.Store.Put(src, &state.Record{
-		Size: p.File.Size, ModTime: p.File.ModTime, Probe: p.File,
-		Excused: true, ExcuseReason: detail, LastAttempt: time.Now(),
-	})
+	if err := r.Store.Reject(src, p.File.Size, p.File.ModTime, detail); err != nil {
+		detail = fmt.Sprintf("%s (and recording the excuse failed: %v)", detail, err)
+	}
 	res.Outcome = OutcomeExcused
 	res.Detail = detail
 	return res
@@ -294,11 +283,4 @@ func tail(s string, lines int) string {
 		parts = parts[len(parts)-lines:]
 	}
 	return strings.Join(parts, "\n")
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
 }

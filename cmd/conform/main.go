@@ -141,13 +141,13 @@ collect:
 			seen[e.Path] = true
 			t.total++
 
-			rec := s.store.Get(e.Path, e.Info.Size(), e.Info.ModTime())
-			if rec != nil && rec.Excused && !includeExcused {
+			size, mod := e.Info.Size(), e.Info.ModTime()
+			if ex := s.store.Excuse(e.Path, size, mod); ex != nil && ex.Excused && !includeExcused {
 				t.excused++
 				continue
 			}
 
-			f := recProbe(rec)
+			f := s.store.Cached(e.Path, size, mod)
 			if f == nil {
 				probed, err := s.prober.Probe(ctx, e.Path)
 				if err != nil {
@@ -156,7 +156,7 @@ collect:
 					continue
 				}
 				f = probed
-				s.store.Put(e.Path, &state.Record{Size: f.Size, ModTime: f.ModTime, Probe: f})
+				s.store.PutProbe(f)
 			}
 
 			p := plan.Build(f, prof)
@@ -176,13 +176,6 @@ collect:
 		s.store.Prune(seen)
 	}
 	return items, t, s.store.Save()
-}
-
-func recProbe(r *state.Record) *media.File {
-	if r == nil {
-		return nil
-	}
-	return r.Probe
 }
 
 type tally struct {
