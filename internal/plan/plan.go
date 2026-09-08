@@ -92,6 +92,15 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	// input order.
 	slices.SortStableFunc(p.Streams, func(a, b StreamPlan) int { return a.Source - b.Source })
 
+	reordered := p.reorder(media.Audio, prof.Audio.Order, prof.Audio.Languages, f)
+	if reordered {
+		p.Reasons = append(p.Reasons, "audio: streams are not in the profile's order")
+	}
+	if p.reorder(media.Subtitle, prof.Subtitles.Order, prof.Subtitles.Languages, f) {
+		p.Reasons = append(p.Reasons, "subtitles: streams are not in the profile's order")
+		reordered = true
+	}
+
 	if f.Container != prof.Container {
 		p.Reasons = append(p.Reasons, fmt.Sprintf("container %s is not %s", f.Container, prof.Container))
 	}
@@ -104,7 +113,7 @@ func Build(f *media.File, prof config.Profile) *Plan {
 		p.Reasons = []string{"no video stream"}
 	case p.transcodes():
 		p.Action = ActionTranscode
-	case f.Container != prof.Container || len(p.Dropped) > 0:
+	case f.Container != prof.Container || len(p.Dropped) > 0 || reordered:
 		p.Action = ActionRemux
 	default:
 		p.Action = ActionNone
@@ -203,6 +212,77 @@ func (p *Plan) planSubtitles(streams []media.Stream, rules config.SubtitleRules)
 			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy})
 		}
 	}
+}
+
+// reorder rewrites the kept streams of one type into the order the profile
+// asks for, leaving every position the other types occupy untouched — so
+// ordering audio never regroups a file whose types are interleaved. It reports
+// whether the order changed, which is the whole of the "is this file already
+// acceptable?" test.
+func (p *Plan) reorder(kind string, keys, langs []string, f *media.File) bool {
+	if len(keys) == 0 {
+		return false
+	}
+	var at []int
+	for i, sp := range p.Streams {
+		if sp.Type == kind {
+			at = append(at, i)
+		}
+	}
+	if len(at) < 2 {
+		return false
+	}
+
+	src := map[int]media.Stream{}
+	for _, s := range f.Streams {
+		src[s.Index] = s
+	}
+
+	was := make([]StreamPlan, len(at))
+	for i, pos := range at {
+		was[i] = p.Streams[pos]
+	}
+	now := slices.Clone(was)
+	slices.SortStableFunc(now, func(a, b StreamPlan) int {
+		return compare(src[a.Source], src[b.Source], keys, langs)
+	})
+
+	changed := false
+	for i, pos := range at {
+		if now[i].Source != was[i].Source {
+			changed = true
+		}
+		p.Streams[pos] = now[i]
+	}
+	return changed
+}
+
+// The source index breaks every tie, which is what makes the order total.
+// Without it "is this file in order?" and "what order would I emit?" could
+// disagree, and the file would be remuxed on every pass forever.
+func compare(a, b media.Stream, keys, langs []string) int {
+	for _, k := range keys {
+		var c int
+		switch k {
+		case config.OrderLanguage:
+			c = languageRank(a.Language, langs) - languageRank(b.Language, langs)
+		case config.OrderChannels:
+			c = b.Channels - a.Channels
+		}
+		if c != 0 {
+			return c
+		}
+	}
+	return a.Index - b.Index
+}
+
+// A language the profile does not list sorts last. That only arises when the
+// filter matched nothing and every stream was kept.
+func languageRank(lang string, langs []string) int {
+	if i := slices.Index(langs, lang); i >= 0 {
+		return i
+	}
+	return len(langs)
 }
 
 func copyOptions(in map[string]string) map[string]string {

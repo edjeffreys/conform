@@ -25,6 +25,8 @@ profiles:
       languages: [eng, und]
       codecs: [aac, ac3, eac3]
       maxChannels: 6
+      # Acceptable stream order: English before undetermined, widest first.
+      order: [language, channels]
       encoder:
         name: eac3
         options:
@@ -32,6 +34,7 @@ profiles:
     subtitles:
       languages: [eng, und]
       codecs: [subrip, ass]
+      order: [language]
 
 execution:
   tempDir: ./.conform-tmp

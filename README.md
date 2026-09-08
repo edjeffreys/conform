@@ -112,10 +112,12 @@ profiles:
       languages: [eng, und]   # other languages are dropped
       codecs: [aac, ac3, eac3]
       maxChannels: 6          # wider is downmixed
+      order: [language, channels]   # any other order is remuxed into this one
       encoder: {name: eac3, options: {b: "640k"}}
     subtitles:
       languages: [eng]
       codecs: [subrip, ass, hdmv_pgs_subtitle]
+      order: [language]
 ```
 
 Options are emitted with a full stream specifier (`-crf:v:0`, not `-crf`), so a
@@ -127,6 +129,30 @@ and should not be replicated network storage: a transcode writes a full working
 copy of everything it processes, so a replicated volume multiplies that write by
 its replica count.
 
+### Stream order
+
+`order` is a predicate like every other rule: it says what order the kept
+streams of that type are acceptable in, so a file already like that is left
+alone and anything else is remuxed into it — no re-encode. Two keys:
+
+- `language` — the stream's position in that rule's own `languages` list, so
+  the list doubles as a preference order. A language the profile does not list
+  sorts last, which only happens when the filter matched nothing.
+- `channels` — most channels first. Audio only.
+
+Ties keep the file's own order, which is what makes the order total. Without
+that, "is this file already in order?" and "what order would I emit?" could
+disagree and the file would be remuxed on every pass, forever.
+
+Only those two keys, and deliberately so. A key whose value the transcode
+itself changes — `codec`, say — could order the output differently from the
+input that produced it, and the run would reject its own work at
+[verification](#replacing-a-file). `language` survives a copy untouched, and
+`channels` settles after one downmix.
+
+Ordering one type never regroups the others: a file that interleaves audio and
+subtitle streams keeps that layout, with only the audio positions rewritten.
+
 ### Choices worth knowing about
 
 - **Subtitles are dropped, never converted.** Turning image-based PGS into text
@@ -137,6 +163,10 @@ its replica count.
   measuring it against the video rules would mark every file with an embedded
   poster as needing a re-encode of one still frame.
 - **A file with no video stream is never touched**, whatever its container.
+- **An untagged stream reads as `und`.** So `languages: [eng]` drops untagged
+  subtitles, and `[eng, und]` keeps them. The "matched nothing, keep
+  everything" fallback is audio-only: a file whose subtitles are all mis-tagged
+  loses them, where a file whose audio is mis-tagged does not.
 - **Size is only checked on a re-encode.** A remux can grow slightly from
   container overhead alone, and refusing it on that basis would block a change
   that costs nothing.

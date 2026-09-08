@@ -7,3 +7,6 @@
 /.conform-tmp/
 /.conform-state/
 /media/
+
+# macOS.
+.DS_Store

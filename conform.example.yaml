@@ -36,6 +36,12 @@ profiles:
       languages: [eng, und]
       codecs: [aac, ac3, eac3]
       maxChannels: 6
+      # The order the kept streams are acceptable in — a predicate like every
+      # other rule, so a file already like this is left alone and anything else
+      # is remuxed into it. `language` is a stream's position in the list
+      # above, `channels` puts the widest track first. Ties keep the file's own
+      # order.
+      order: [language, channels]
       encoder:
         name: eac3
         options:
@@ -52,10 +58,13 @@ profiles:
       container: conform
 
     subtitles:
+      # Anything outside this list is dropped. An untagged stream reads as
+      # "und", so listing it is what keeps untagged subtitles.
       languages: [eng, und]
       # Image-based PGS is kept, not converted — see the planner. Anything
       # outside this list is dropped rather than guessed at.
       codecs: [subrip, ass, hdmv_pgs_subtitle]
+      order: [language]
 
 execution:
   # Needs room for one source-sized file per worker. Avoid replicated storage:

@@ -67,13 +67,30 @@ type AudioRules struct {
 	Codecs      []string `yaml:"codecs"`
 	MaxChannels int      `yaml:"maxChannels"`
 	Encoder     Encoder  `yaml:"encoder"`
+	// Order the kept streams are acceptable in, as a list of OrderKeys. Like
+	// every other rule it is a predicate: a file already in this order is left
+	// alone. Empty accepts the order the file already has.
+	Order []string `yaml:"order"`
 }
 
 type SubtitleRules struct {
 	Languages []string `yaml:"languages"`
 	// Codecs that are acceptable. Anything else is dropped, never converted.
 	Codecs []string `yaml:"codecs"`
+	Order  []string `yaml:"order"`
 }
+
+// Keys accepted in an `order` rule.
+//
+// Deliberately narrow: a key whose value the transcode itself can change —
+// codec, say — could order the output differently from the input that produced
+// it, and the run would reject its own work as non-conformant. These two are
+// either untouched by a copy or, in the case of a downmix, settle after one
+// pass.
+const (
+	OrderLanguage = "language" // position in the rule's own Languages list
+	OrderChannels = "channels" // most channels first; audio only
+)
 
 type Encoder struct {
 	Name string `yaml:"name"`
@@ -233,6 +250,12 @@ func (c *Config) Validate() error {
 		if !ok {
 			return fmt.Errorf("library %q references undefined profile %q", l.Name, l.Profile)
 		}
+		if err := validOrder(p.Audio.Order, true); err != nil {
+			return fmt.Errorf("profile %q audio: %w", l.Profile, err)
+		}
+		if err := validOrder(p.Subtitles.Order, false); err != nil {
+			return fmt.Errorf("profile %q subtitles: %w", l.Profile, err)
+		}
 		if p.Container == "" {
 			return fmt.Errorf("profile %q has no container", l.Profile)
 		}
@@ -254,6 +277,20 @@ func (c *Config) Validate() error {
 
 // Profile assumes Validate has run, which guarantees the profile exists.
 func (c *Config) Profile(l Library) Profile { return c.Profiles[l.Profile] }
+
+func validOrder(keys []string, audio bool) error {
+	for _, k := range keys {
+		switch {
+		case k == OrderLanguage:
+		case k == OrderChannels && audio:
+		case k == OrderChannels:
+			return fmt.Errorf("%q orders by a value a subtitle stream does not have", k)
+		default:
+			return fmt.Errorf("unknown order key %q", k)
+		}
+	}
+	return nil
+}
 
 func ptr[T any](v T) *T { return &v }
 

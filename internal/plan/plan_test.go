@@ -121,6 +121,166 @@ func TestDownmixSetsChannelCount(t *testing.T) {
 	}
 }
 
+func ordered(audio, subs []string) config.Profile {
+	p := profile()
+	p.Audio.Order = audio
+	p.Subtitles.Order = subs
+	p.Audio.Languages = []string{"eng", "und", "fre"}
+	p.Subtitles.Languages = []string{"eng", "fre"}
+	return p
+}
+
+func sources(p *Plan, kind string) []int {
+	var out []int
+	for _, s := range p.Streams {
+		if s.Type == kind {
+			out = append(out, s.Source)
+		}
+	}
+	return out
+}
+
+func TestOrdering(t *testing.T) {
+	tests := []struct {
+		name    string
+		file    *media.File
+		prof    config.Profile
+		want    Action
+		wantAud []int
+		wantSub []int
+	}{
+		{
+			name:    "audio follows the language list, not the file",
+			file:    file("mkv", vid("hevc", 1080), aud("aac", "und", 2), aud("aac", "eng", 2)),
+			prof:    ordered([]string{config.OrderLanguage}, nil),
+			want:    ActionRemux,
+			wantAud: []int{2, 1},
+		},
+		{
+			name:    "more channels first",
+			file:    file("mkv", vid("hevc", 1080), aud("aac", "eng", 2), aud("aac", "eng", 6)),
+			prof:    ordered([]string{config.OrderChannels}, nil),
+			want:    ActionRemux,
+			wantAud: []int{2, 1},
+		},
+		{
+			name:    "language wins over channels when it comes first",
+			file:    file("mkv", vid("hevc", 1080), aud("aac", "und", 6), aud("aac", "eng", 2)),
+			prof:    ordered([]string{config.OrderLanguage, config.OrderChannels}, nil),
+			want:    ActionRemux,
+			wantAud: []int{2, 1},
+		},
+		{
+			name:    "a file already in order is left alone",
+			file:    file("mkv", vid("hevc", 1080), aud("aac", "eng", 6), aud("aac", "und", 2)),
+			prof:    ordered([]string{config.OrderLanguage, config.OrderChannels}, nil),
+			want:    ActionNone,
+			wantAud: []int{1, 2},
+		},
+		{
+			name:    "no order rule accepts the order the file has",
+			file:    file("mkv", vid("hevc", 1080), aud("aac", "und", 2), aud("aac", "eng", 6)),
+			prof:    profile(),
+			want:    ActionNone,
+			wantAud: []int{1, 2},
+		},
+		{
+			name: "subtitles order independently of audio",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 2),
+				sub("subrip", "fre"), sub("subrip", "eng")),
+			prof:    ordered(nil, []string{config.OrderLanguage}),
+			want:    ActionRemux,
+			wantAud: []int{1},
+			wantSub: []int{3, 2},
+		},
+		{
+			name:    "ties keep the file's own order",
+			file:    file("mkv", vid("hevc", 1080), aud("aac", "eng", 6), aud("aac", "eng", 6)),
+			prof:    ordered([]string{config.OrderLanguage, config.OrderChannels}, nil),
+			want:    ActionNone,
+			wantAud: []int{1, 2},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Build(tc.file, tc.prof)
+			if p.Action != tc.want {
+				t.Errorf("action = %s, want %s (%s)", p.Action, tc.want, p)
+			}
+			if got := sources(p, media.Audio); !slices.Equal(got, tc.wantAud) {
+				t.Errorf("audio order = %v, want %v", got, tc.wantAud)
+			}
+			if got := sources(p, media.Subtitle); !slices.Equal(got, tc.wantSub) {
+				t.Errorf("subtitle order = %v, want %v", got, tc.wantSub)
+			}
+		})
+	}
+}
+
+// Reordering one type must not regroup a file whose types are interleaved.
+func TestOrderingLeavesOtherTypesWhereTheyAre(t *testing.T) {
+	f := file("mkv", vid("hevc", 1080), aud("aac", "und", 2), sub("subrip", "eng"), aud("aac", "eng", 2))
+	p := Build(f, ordered([]string{config.OrderLanguage}, nil))
+
+	var types []string
+	for _, s := range p.Streams {
+		types = append(types, s.Type)
+	}
+	want := []string{media.Video, media.Audio, media.Subtitle, media.Audio}
+	if !slices.Equal(types, want) {
+		t.Errorf("type layout = %v, want %v", types, want)
+	}
+	if got := sources(p, media.Audio); !slices.Equal(got, []int{3, 1}) {
+		t.Errorf("audio order = %v, want [3 1]", got)
+	}
+}
+
+// A reorder is only real if it reaches the command line, and the codec
+// specifier has to follow the emitted position rather than the source index.
+func TestOrderingReachesTheFFmpegArgs(t *testing.T) {
+	f := file("mkv", vid("hevc", 1080), aud("truehd", "und", 8), aud("aac", "eng", 2))
+	args := strings.Join(Build(f, ordered([]string{config.OrderLanguage}, nil)).FFmpegArgs("in", "out"), " ")
+
+	if !strings.Contains(args, "-map 0:0 -map 0:2 -map 0:1") {
+		t.Errorf("map order does not follow the plan:\n%s", args)
+	}
+	// Source 1 is the truehd stream, now emitted second, so the encoder must
+	// be pinned to a:1.
+	if !strings.Contains(args, "-c:a:1 eac3") || strings.Contains(args, "-c:a:0 eac3") {
+		t.Errorf("encoder pinned to the wrong output stream:\n%s", args)
+	}
+}
+
+// An order rule must not make a file that needs a transcode order differently
+// once transcoded, or the run rejects its own output.
+func TestOrderingConverges(t *testing.T) {
+	prof := ordered([]string{config.OrderLanguage, config.OrderChannels}, []string{config.OrderLanguage})
+	before := file("avi",
+		vid("h264", 2160),
+		aud("aac", "fre", 2), aud("truehd", "eng", 8),
+		sub("subrip", "fre"), sub("subrip", "eng"),
+	)
+	p := Build(before, prof)
+	if p.Action != ActionTranscode {
+		t.Fatalf("expected a transcode, got %s", p.Action)
+	}
+	if got := sources(p, media.Audio); !slices.Equal(got, []int{2, 1}) {
+		t.Fatalf("audio order = %v, want [2 1]", got)
+	}
+
+	// What ffmpeg emits for that plan: the chosen order, renumbered, with the
+	// 8-channel truehd downmixed to 6-channel eac3.
+	after := file("mkv",
+		vid("hevc", 1080),
+		aud("eac3", "eng", 6), aud("aac", "fre", 2),
+		sub("subrip", "eng"), sub("subrip", "fre"),
+	)
+	if got := Build(after, prof); got.Action != ActionNone {
+		t.Fatalf("the result of the plan still needs work (%s) — this would loop", got)
+	}
+}
+
 // Without a full stream specifier, a file with two video tracks has the
 // profile applied to both.
 func TestFFmpegArgsAreStreamSpecific(t *testing.T) {

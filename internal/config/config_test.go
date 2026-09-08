@@ -55,6 +55,11 @@ func TestLoadRejects(t *testing.T) {
 		// A mistyped rule name would silently disable the rule.
 		"unknown field": strings.Replace(valid, "maxHeight", "max_height", 1),
 		"no libraries":  "profiles:\n  standard:\n    container: mkv\n",
+		// An order key that does not exist would otherwise sort by nothing and
+		// silently leave the file in whatever order it arrived in.
+		"unknown order key": valid + "    audio:\n      order: [bitrate]\n",
+		// Subtitle streams have no channel count to order by.
+		"channels on subtitles": valid + "    subtitles:\n      order: [channels]\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
