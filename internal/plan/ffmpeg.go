@@ -34,6 +34,9 @@ func (p *Plan) FFmpegArgs(in, out string) []string {
 		for _, k := range sortedKeys(s.Options) {
 			codecArgs = append(codecArgs, fmt.Sprintf("-%s:%s", k, spec), s.Options[k])
 		}
+		for _, k := range sortedKeys(s.Metadata) {
+			codecArgs = append(codecArgs, "-metadata:s:"+spec, k+"="+s.Metadata[k])
+		}
 	}
 
 	args = append(args, codecArgs...)

@@ -114,6 +114,8 @@ profiles:
       maxChannels: 6          # wider is downmixed
       order: [language, channels]   # any other order is remuxed into this one
       encoder: {name: eac3, options: {b: "640k"}}
+      stereoCompanion:              # a stereo track must exist alongside surround
+        encoder: {name: aac, options: {b: "192k"}}
     subtitles:
       languages: [eng]
       codecs: [subrip, ass, hdmv_pgs_subtitle]
@@ -128,6 +130,39 @@ so a given profile always produces byte-identical arguments.
 and should not be replicated network storage: a transcode writes a full working
 copy of everything it processes, so a replicated volume multiplies that write by
 its replica count.
+
+### The stereo companion
+
+`stereoCompanion` requires a stereo track alongside every surround one in the
+same language, and derives it where it is missing. It is a predicate like the
+rest: a file that already has both is left alone, which is what stops it adding
+a track on every pass.
+
+The point is the *downmix*, not the extra track. A player folding 5.1 down to
+stereo puts the centre channel — where dialogue sits — well below the music and
+effects around it. Measured on a test file with dialogue in the centre and
+music in the other four channels:
+
+| stereo track | dialogue vs music |
+|---|---|
+| player's own downmix | **−7.6 dB** |
+| `stereoCompanion` | **+2.9 dB** |
+
+The default filter lifts the centre and pulls the rest down to leave room for
+it:
+
+```
+pan=stereo|FL=1.4*FC+0.5*FL+0.5*BL|FR=1.4*FC+0.5*FR+0.5*BR
+```
+
+Set `filter` to override it — `compand` for night-mode compression,
+`dynaudnorm` after the pan for a flatter result. The derived stream is tagged
+with its source's language explicitly rather than relying on ffmpeg to copy it,
+because matching it back on the next pass is exactly what converges.
+
+A surround stream the profile is already downmixing (`maxChannels: 2`) needs no
+companion — the rule is a predicate on what the output will hold, not on the
+input.
 
 ### Stream order
 
@@ -167,9 +202,10 @@ subtitle streams keeps that layout, with only the audio positions rewritten.
   subtitles, and `[eng, und]` keeps them. The "matched nothing, keep
   everything" fallback is audio-only: a file whose subtitles are all mis-tagged
   loses them, where a file whose audio is mis-tagged does not.
-- **Size is only checked on a re-encode.** A remux can grow slightly from
-  container overhead alone, and refusing it on that basis would block a change
-  that costs nothing.
+- **Size is only checked on a re-encode that adds nothing.** A remux can grow
+  from container overhead alone, and a profile that asks for an extra track
+  means the file to grow. The check is there to catch a re-encode that got
+  bigger for nothing, so neither case should trip it.
 
 ## Replacing a file
 

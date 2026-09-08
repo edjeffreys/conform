@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -278,6 +279,173 @@ func TestOrderingConverges(t *testing.T) {
 	)
 	if got := Build(after, prof); got.Action != ActionNone {
 		t.Fatalf("the result of the plan still needs work (%s) — this would loop", got)
+	}
+}
+
+func withCompanion(p config.Profile) config.Profile {
+	p.Audio.StereoCompanion = &config.StereoCompanion{
+		Filter:  config.DefaultCompanionFilter,
+		Title:   "Stereo",
+		Encoder: config.Encoder{Name: "aac", Options: map[string]string{"b": "192k"}},
+	}
+	return p
+}
+
+func derived(p *Plan) []StreamPlan {
+	var out []StreamPlan
+	for _, s := range p.Streams {
+		if s.Derived {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func TestStereoCompanion(t *testing.T) {
+	wide := profile()
+	wide.Audio.MaxChannels = 0
+
+	tests := []struct {
+		name string
+		file *media.File
+		prof config.Profile
+		want int
+	}{
+		{
+			name: "surround with no stereo gets one",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 6)),
+			prof: withCompanion(profile()),
+			want: 1,
+		},
+		{
+			name: "a stereo track in that language already answers it",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 6), aud("aac", "eng", 2)),
+			prof: withCompanion(profile()),
+			want: 0,
+		},
+		{
+			name: "a stereo track in another language does not",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 6), aud("aac", "und", 2)),
+			prof: withCompanion(profile()),
+			want: 1,
+		},
+		{
+			// The rule is a predicate on the output: this stream is already
+			// becoming stereo, so nothing is missing from the result.
+			name: "none when the profile downmixes it to stereo anyway",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 6)),
+			prof: func() config.Profile { p := withCompanion(profile()); p.Audio.MaxChannels = 2; return p }(),
+			want: 0,
+		},
+		{
+			name: "one companion answers every surround stream of its language",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 8), aud("aac", "eng", 6)),
+			prof: withCompanion(wide),
+			want: 1,
+		},
+		{
+			name: "two languages need two",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 6), aud("aac", "und", 6)),
+			prof: withCompanion(profile()),
+			want: 2,
+		},
+		{
+			name: "no rule, no companion",
+			file: file("mkv", vid("hevc", 1080), aud("aac", "eng", 6)),
+			prof: profile(),
+			want: 0,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Build(tc.file, tc.prof)
+			if got := len(derived(p)); got != tc.want {
+				t.Errorf("added %d companions, want %d (%s)", got, tc.want, p)
+			}
+			if p.AddsStreams() != (tc.want > 0) {
+				t.Errorf("AddsStreams = %v with %d companions", p.AddsStreams(), tc.want)
+			}
+		})
+	}
+}
+
+func TestStereoCompanionCarriesItsSourceLanguage(t *testing.T) {
+	f := file("mkv", vid("hevc", 1080), aud("aac", "eng", 6))
+	d := derived(Build(f, withCompanion(profile())))
+	if len(d) != 1 {
+		t.Fatalf("want one companion, got %d", len(d))
+	}
+
+	// Set explicitly rather than left to ffmpeg: matching it back to its
+	// source language is what makes the next pass leave the file alone.
+	if d[0].Metadata["language"] != "eng" {
+		t.Errorf("language metadata = %q, want eng", d[0].Metadata["language"])
+	}
+	if d[0].Metadata["title"] != "Stereo" {
+		t.Errorf("title = %q, want Stereo", d[0].Metadata["title"])
+	}
+	if d[0].Channels != 2 || d[0].Filter != config.DefaultCompanionFilter {
+		t.Errorf("companion is not a stereo downmix: %+v", d[0])
+	}
+}
+
+// The added stream reads the same input as the stream it came from, so the
+// source is mapped twice and the filter has to be pinned to the second one.
+func TestStereoCompanionFFmpegArgs(t *testing.T) {
+	f := file("mkv", vid("hevc", 1080), aud("aac", "eng", 6))
+	args := strings.Join(Build(f, withCompanion(profile())).FFmpegArgs("in", "out"), " ")
+
+	for _, want := range []string{
+		"-map 0:0 -map 0:1 -map 0:1",
+		"-c:a:0 copy",
+		"-c:a:1 aac",
+		"-filter:a:1 " + config.DefaultCompanionFilter,
+		"-b:a:1 192k",
+		"-metadata:s:a:1 language=eng",
+		"-metadata:s:a:1 title=Stereo",
+	} {
+		if !strings.Contains(args, want) {
+			t.Errorf("missing %q in:\n%s", want, args)
+		}
+	}
+}
+
+// A companion ties with the stream it came from, so ordering keeps the pair
+// together instead of scattering it.
+func TestStereoCompanionStaysWithItsSource(t *testing.T) {
+	prof := withCompanion(ordered([]string{config.OrderLanguage, config.OrderChannels}, nil))
+	f := file("mkv", vid("hevc", 1080), aud("aac", "und", 2), aud("aac", "eng", 6))
+
+	p := Build(f, prof)
+	var got []string
+	for _, s := range p.Streams {
+		if s.Type != media.Audio {
+			continue
+		}
+		got = append(got, fmt.Sprintf("%s/%d", s.Language, s.Channels))
+	}
+	want := []string{"eng/6", "eng/2", "und/2"}
+	if !slices.Equal(got, want) {
+		t.Errorf("audio layout = %v, want %v", got, want)
+	}
+}
+
+// The whole rule rests on this: the file it produces must satisfy it.
+func TestStereoCompanionConverges(t *testing.T) {
+	prof := withCompanion(ordered([]string{config.OrderLanguage, config.OrderChannels}, nil))
+	before := file("mkv", vid("hevc", 1080), aud("aac", "eng", 6))
+
+	p := Build(before, prof)
+	if p.Action != ActionTranscode {
+		t.Fatalf("expected a transcode, got %s", p.Action)
+	}
+
+	// What ffmpeg emits for that plan: the surround stream, then the stereo
+	// companion tagged with its language.
+	after := file("mkv", vid("hevc", 1080), aud("aac", "eng", 6), aud("aac", "eng", 2))
+	if got := Build(after, prof); got.Action != ActionNone {
+		t.Fatalf("the result still needs work (%s) — this would add a track every pass", got)
 	}
 }
 

@@ -71,7 +71,28 @@ type AudioRules struct {
 	// every other rule it is a predicate: a file already in this order is left
 	// alone. Empty accepts the order the file already has.
 	Order []string `yaml:"order"`
+	// StereoCompanion requires a stereo stream alongside every surround one in
+	// the same language. Also a predicate: a file that already has both is
+	// left alone, which is why adding one converges. Nil imposes nothing.
+	StereoCompanion *StereoCompanion `yaml:"stereoCompanion"`
 }
+
+// StereoCompanion derives a stereo track from a surround one, for players that
+// downmix badly — a plain downmix leaves dialogue, which lives in the centre
+// channel, quiet against music and effects.
+type StereoCompanion struct {
+	// Filter is the downmix, configurable because the right one is a matter of
+	// taste. The default lifts the centre channel relative to the rest.
+	Filter string `yaml:"filter"`
+	// Title distinguishes it in a player, which would otherwise show two
+	// tracks of the same language with nothing to tell them apart.
+	Title   string  `yaml:"title"`
+	Encoder Encoder `yaml:"encoder"`
+}
+
+// Boosts the centre channel, where dialogue sits, and pulls the rest down to
+// leave headroom for it.
+const DefaultCompanionFilter = "pan=stereo|FL=1.4*FC+0.5*FL+0.5*BL|FR=1.4*FC+0.5*FR+0.5*BR"
 
 type SubtitleRules struct {
 	Languages []string `yaml:"languages"`
@@ -215,6 +236,14 @@ func (c *Config) applyDefaults() {
 		if p.Job.Container == "" {
 			p.Job.Container = "conform"
 		}
+		if sc := p.Audio.StereoCompanion; sc != nil {
+			if sc.Filter == "" {
+				sc.Filter = DefaultCompanionFilter
+			}
+			if sc.Title == "" {
+				sc.Title = "Stereo"
+			}
+		}
 		if p.Video.ScaleFilter == "" {
 			p.Video.ScaleFilter = "scale=-2:{height}"
 		}
@@ -249,6 +278,11 @@ func (c *Config) Validate() error {
 		p, ok := c.Profiles[l.Profile]
 		if !ok {
 			return fmt.Errorf("library %q references undefined profile %q", l.Name, l.Profile)
+		}
+		// Same reason as the rules above: a profile that can require a stream
+		// it cannot emit would plan a transcode it cannot render.
+		if sc := p.Audio.StereoCompanion; sc != nil && sc.Encoder.Name == "" {
+			return fmt.Errorf("profile %q sets stereoCompanion but no encoder for it", l.Profile)
 		}
 		if err := validOrder(p.Audio.Order, true); err != nil {
 			return fmt.Errorf("profile %q audio: %w", l.Profile, err)

@@ -31,6 +31,13 @@ profiles:
         name: eac3
         options:
           b: "640k"
+      # A stereo track derived from any surround one, with the centre channel
+      # (dialogue) lifted above the music around it.
+      stereoCompanion:
+        encoder:
+          name: aac
+          options:
+            b: "192k"
     subtitles:
       languages: [eng, und]
       codecs: [subrip, ass]

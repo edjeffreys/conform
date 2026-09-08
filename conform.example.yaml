@@ -46,6 +46,19 @@ profiles:
         name: eac3
         options:
           b: "640k"
+      # Requires a stereo track alongside every surround one in the same
+      # language, deriving it where it is missing. Also a predicate: a file
+      # that already has both is left alone.
+      #
+      # The point is the downmix. A player's own 5.1-to-stereo fold-down puts
+      # the centre channel — where dialogue sits — well below the music and
+      # effects around it; the default filter lifts it back above them. Set
+      # `filter` to override it.
+      stereoCompanion:
+        encoder:
+          name: aac
+          options:
+            b: "192k"
 
     # Only read by `conform orchestrate`. The PodTemplate carries everything
     # about placement — the device resource, the node selector, the mounts that

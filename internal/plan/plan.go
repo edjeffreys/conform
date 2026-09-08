@@ -49,12 +49,36 @@ type StreamPlan struct {
 	Options map[string]string
 	Filter  string
 	Reason  string
+
+	// Language and Channels describe the stream this plan will produce, not
+	// the one it reads. Ordering compares these, so a derived stream sorts on
+	// what it will be — the same values the next pass will observe.
+	Language string
+	Channels int
+	// Metadata is written onto the output stream. The language of a derived
+	// stream is set here rather than left to ffmpeg's own copying, because
+	// matching it back to its source on the next pass is what converges.
+	Metadata map[string]string
+	// Derived marks a stream the profile asked for that the source does not
+	// have.
+	Derived bool
 }
 
 type Dropped struct {
 	Source int
 	Type   string
 	Reason string
+}
+
+// AddsStreams reports whether the plan produces a stream the source lacks,
+// which is what makes its output legitimately larger than its input.
+func (p *Plan) AddsStreams() bool {
+	for _, s := range p.Streams {
+		if s.Derived {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Plan) transcodes() bool {
@@ -74,7 +98,8 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	var realVideo []media.Stream
 	for _, s := range f.Streams {
 		if s.Type == media.Video && s.AttachedPic {
-			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy, Reason: "cover art"})
+			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy,
+				Language: s.Language, Reason: "cover art"})
 			continue
 		}
 		if s.Type == media.Video {
@@ -92,11 +117,11 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	// input order.
 	slices.SortStableFunc(p.Streams, func(a, b StreamPlan) int { return a.Source - b.Source })
 
-	reordered := p.reorder(media.Audio, prof.Audio.Order, prof.Audio.Languages, f)
+	reordered := p.reorder(media.Audio, prof.Audio.Order, prof.Audio.Languages)
 	if reordered {
 		p.Reasons = append(p.Reasons, "audio: streams are not in the profile's order")
 	}
-	if p.reorder(media.Subtitle, prof.Subtitles.Order, prof.Subtitles.Languages, f) {
+	if p.reorder(media.Subtitle, prof.Subtitles.Order, prof.Subtitles.Languages) {
 		p.Reasons = append(p.Reasons, "subtitles: streams are not in the profile's order")
 		reordered = true
 	}
@@ -122,7 +147,7 @@ func Build(f *media.File, prof config.Profile) *Plan {
 }
 
 func planVideo(s media.Stream, rules config.VideoRules, p *Plan) StreamPlan {
-	sp := StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy}
+	sp := StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy, Language: s.Language}
 
 	var why []string
 	if len(rules.Codecs) > 0 && !slices.Contains(rules.Codecs, s.Codec) {
@@ -175,7 +200,8 @@ func (p *Plan) planAudio(streams []media.Stream, rules config.AudioRules) {
 			continue
 		}
 
-		sp := StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy}
+		sp := StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy,
+			Language: s.Language, Channels: s.Channels}
 		var why []string
 		if len(rules.Codecs) > 0 && !slices.Contains(rules.Codecs, s.Codec) {
 			why = append(why, fmt.Sprintf("codec %s not in %s", s.Codec, strings.Join(rules.Codecs, "/")))
@@ -190,11 +216,50 @@ func (p *Plan) planAudio(streams []media.Stream, rules config.AudioRules) {
 			sp.Reason = strings.Join(why, ", ")
 			if downmix {
 				sp.Options["ac"] = strconv.Itoa(rules.MaxChannels)
+				sp.Channels = rules.MaxChannels
 			}
 			p.Reasons = append(p.Reasons, fmt.Sprintf("audio:%d: %s", s.Index, sp.Reason))
 		}
 		p.Streams = append(p.Streams, sp)
 	}
+	p.addCompanions(rules)
+}
+
+// The predicate is on what the output will hold, not on what the input holds:
+// a surround stream the profile is already downmixing to stereo needs no
+// companion, and a file that has both is left alone. That is what makes adding
+// one converge rather than repeat.
+func (p *Plan) addCompanions(rules config.AudioRules) {
+	sc := rules.StereoCompanion
+	if sc == nil {
+		return
+	}
+
+	stereo := map[string]bool{}
+	for _, sp := range p.Streams {
+		if sp.Type == media.Audio && sp.Channels <= 2 {
+			stereo[sp.Language] = true
+		}
+	}
+
+	var add []StreamPlan
+	for _, sp := range p.Streams {
+		if sp.Type != media.Audio || sp.Channels <= 2 || stereo[sp.Language] {
+			continue
+		}
+		// One companion answers every surround stream sharing its language.
+		stereo[sp.Language] = true
+		add = append(add, StreamPlan{
+			Source: sp.Source, Type: media.Audio, Codec: sc.Encoder.Name,
+			Options: copyOptions(sc.Encoder.Options), Filter: sc.Filter,
+			Language: sp.Language, Channels: 2, Derived: true,
+			Metadata: map[string]string{"language": sp.Language, "title": sc.Title},
+			Reason:   "stereo companion",
+		})
+		p.Reasons = append(p.Reasons,
+			fmt.Sprintf("audio:%d: %d channels with no stereo companion in %s", sp.Source, sp.Channels, sp.Language))
+	}
+	p.Streams = append(p.Streams, add...)
 }
 
 func (p *Plan) planSubtitles(streams []media.Stream, rules config.SubtitleRules) {
@@ -209,7 +274,8 @@ func (p *Plan) planSubtitles(streams []media.Stream, rules config.SubtitleRules)
 			p.Dropped = append(p.Dropped, Dropped{Source: s.Index, Type: s.Type,
 				Reason: fmt.Sprintf("codec %s not in %s", s.Codec, strings.Join(rules.Codecs, "/"))})
 		default:
-			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy})
+			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy,
+				Language: s.Language})
 		}
 	}
 }
@@ -219,7 +285,7 @@ func (p *Plan) planSubtitles(streams []media.Stream, rules config.SubtitleRules)
 // ordering audio never regroups a file whose types are interleaved. It reports
 // whether the order changed, which is the whole of the "is this file already
 // acceptable?" test.
-func (p *Plan) reorder(kind string, keys, langs []string, f *media.File) bool {
+func (p *Plan) reorder(kind string, keys, langs []string) bool {
 	if len(keys) == 0 {
 		return false
 	}
@@ -233,19 +299,12 @@ func (p *Plan) reorder(kind string, keys, langs []string, f *media.File) bool {
 		return false
 	}
 
-	src := map[int]media.Stream{}
-	for _, s := range f.Streams {
-		src[s.Index] = s
-	}
-
 	was := make([]StreamPlan, len(at))
 	for i, pos := range at {
 		was[i] = p.Streams[pos]
 	}
 	now := slices.Clone(was)
-	slices.SortStableFunc(now, func(a, b StreamPlan) int {
-		return compare(src[a.Source], src[b.Source], keys, langs)
-	})
+	slices.SortStableFunc(now, func(a, b StreamPlan) int { return compare(a, b, keys, langs) })
 
 	changed := false
 	for i, pos := range at {
@@ -259,8 +318,9 @@ func (p *Plan) reorder(kind string, keys, langs []string, f *media.File) bool {
 
 // The source index breaks every tie, which is what makes the order total.
 // Without it "is this file in order?" and "what order would I emit?" could
-// disagree, and the file would be remuxed on every pass forever.
-func compare(a, b media.Stream, keys, langs []string) int {
+// disagree, and the file would be remuxed on every pass forever. A derived
+// stream ties with the stream it came from and stays just after it.
+func compare(a, b StreamPlan, keys, langs []string) int {
 	for _, k := range keys {
 		var c int
 		switch k {
@@ -273,7 +333,7 @@ func compare(a, b media.Stream, keys, langs []string) int {
 			return c
 		}
 	}
-	return a.Index - b.Index
+	return a.Source - b.Source
 }
 
 // A language the profile does not list sorts last. That only arises when the

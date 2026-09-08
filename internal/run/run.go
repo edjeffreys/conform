@@ -136,8 +136,11 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 	}
 
 	// A remux can grow from container overhead alone, so refusing it on size
-	// would block a change that costs nothing.
-	if p.Action == plan.ActionTranscode && p.File.Size > 0 {
+	// would block a change that costs nothing. Nor does the check apply when
+	// the profile asked for a stream the source does not have: the file is
+	// meant to grow, and this exists to catch a re-encode that grew for
+	// nothing.
+	if p.Action == plan.ActionTranscode && !p.AddsStreams() && p.File.Size > 0 {
 		info, err := os.Stat(tmp)
 		if err != nil {
 			return err.Error(), false
