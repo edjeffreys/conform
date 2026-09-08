@@ -65,6 +65,30 @@ go build -o conform ./cmd/conform
 path without writing. Add `-limit 1` to try exactly one file, and `-verbose` to
 see the ffmpeg command lines.
 
+Both also take paths, which are judged by whichever library contains them:
+
+```sh
+./conform plan  -config conform.local.yaml media/some-file.mkv
+./conform apply -config conform.local.yaml media/some-file.mkv
+```
+
+The plan is re-derived from the config either way, so a process handed a single
+path reaches the same verdict a full pass would have. That is what the
+orchestrator described under [Distribution](#distribution) will rely on, instead
+of sending a worker a description of the work. Such a worker reads the probe
+cache but never writes it — the cache has one owner, and a hundred of them
+would otherwise be racing over it.
+
+### Exit status
+
+0 whenever conform reached a verdict, **including** "this file cannot be
+processed". That outcome is already recorded as an excuse, and failing the run
+for it as well would have the ledger and a job runner's own retries multiply.
+
+Non-zero is a fault: a bad config, a path no library covers, a directory that
+cannot be read, ffmpeg missing. Those are worth retrying; a file that will not
+encode is not.
+
 Run the tests with `go test ./...`.
 
 ## Config
@@ -151,6 +175,10 @@ and the cluster scheduler places it. A profile carries its own placement
 requirements — device resources, node selectors, tolerations — which conform
 passes through without interpreting, so a job needing a specific encoder can
 only ever land somewhere that has one.
+
+The worker half of that is already here: a Job's container runs `conform apply`
+against one path, re-derives the plan from the same config, and exits 0 with its
+verdict recorded. What is missing is the orchestrator that creates the Jobs.
 
 ## Licence
 

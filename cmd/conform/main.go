@@ -11,9 +11,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -69,9 +71,12 @@ func realMain() error {
 func usage() {
 	fmt.Fprint(os.Stderr, `conform — reconcile a media library against a declared profile
 
-  conform probe <file>      print what ffprobe sees, as conform models it
-  conform plan  [flags]     show what would change; touches nothing
-  conform apply [flags]     make it so
+  conform probe <file>          print what ffprobe sees, as conform models it
+  conform plan  [flags] [file]  show what would change; touches nothing
+  conform apply [flags] [file]  make it so
+
+Named files are judged by the library that contains them. With none given,
+every configured library is walked.
 
 Flags for plan and apply:
   -config PATH    config file (default conform.yaml)
@@ -90,12 +95,20 @@ type session struct {
 	cfg     *config.Config
 	prober  *media.Prober
 	store   *state.Store
+	paths   []string
 	limit   int
 	library string
 	verbose bool
+	// The probe cache has a single owner. A pass over whole libraries is that
+	// owner; a worker handed individual paths runs alongside others against
+	// the same cache, so it reads it and never writes it.
+	ownsCache bool
 }
 
-func newSession(cfgPath, library string, limit int, verbose bool) (*session, error) {
+func newSession(cfgPath, library string, paths []string, limit int, verbose bool) (*session, error) {
+	if len(paths) > 0 && (library != "" || limit != 0) {
+		return nil, errors.New("-library and -limit select within a library; they do not apply to named files")
+	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, err
@@ -106,7 +119,8 @@ func newSession(cfgPath, library string, limit int, verbose bool) (*session, err
 	}
 	return &session{
 		cfg: cfg, prober: media.NewProber(cfg.Execution.FFprobe), store: store,
-		limit: limit, library: library, verbose: verbose,
+		paths: paths, limit: limit, library: library, verbose: verbose,
+		ownsCache: len(paths) == 0,
 	}, nil
 }
 
@@ -141,30 +155,16 @@ collect:
 			seen[e.Path] = true
 			t.total++
 
-			size, mod := e.Info.Size(), e.Info.ModTime()
-			if ex := s.store.Excuse(e.Path, size, mod); ex != nil && ex.Excused && !includeExcused {
-				t.excused++
+			it, err := s.consider(ctx, lib, prof, e.Path, e.Info, includeExcused, t)
+			if err != nil {
+				t.unreadable++
+				fmt.Fprintf(os.Stderr, "  ! %s: %v\n", rel(lib, e.Path), err)
 				continue
 			}
-
-			f := s.store.Cached(e.Path, size, mod)
-			if f == nil {
-				probed, err := s.prober.Probe(ctx, e.Path)
-				if err != nil {
-					t.unreadable++
-					fmt.Fprintf(os.Stderr, "  ! %s: %v\n", rel(lib, e.Path), err)
-					continue
-				}
-				f = probed
-				s.store.PutProbe(f)
-			}
-
-			p := plan.Build(f, prof)
-			t.count(p.Action)
-			if p.Action == plan.ActionNone {
+			if it == nil {
 				continue
 			}
-			items = append(items, item{lib: lib, prof: prof, plan: p})
+			items = append(items, *it)
 			if s.limit > 0 && len(items) >= s.limit {
 				break collect
 			}
@@ -176,6 +176,105 @@ collect:
 		s.store.Prune(seen)
 	}
 	return items, t, s.store.Save()
+}
+
+// A nil item means the file needs no work; err means no verdict was reached at
+// all, which is the caller's to interpret.
+func (s *session) consider(ctx context.Context, lib config.Library, prof config.Profile, path string, info fs.FileInfo, includeExcused bool, t *tally) (*item, error) {
+	size, mod := info.Size(), info.ModTime()
+	if ex := s.store.Excuse(path, size, mod); ex != nil && ex.Excused && !includeExcused {
+		t.excused++
+		return nil, nil
+	}
+
+	f := s.store.Cached(path, size, mod)
+	if f == nil {
+		probed, err := s.prober.Probe(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		f = probed
+		if s.ownsCache {
+			s.store.PutProbe(f)
+		}
+	}
+
+	p := plan.Build(f, prof)
+	t.count(p.Action)
+	if p.Action == plan.ActionNone {
+		return nil, nil
+	}
+	return &item{lib: lib, prof: prof, plan: p}, nil
+}
+
+func (s *session) selection(ctx context.Context, includeExcused bool) ([]item, *tally, error) {
+	if len(s.paths) > 0 {
+		return s.collectFiles(ctx, includeExcused)
+	}
+	return s.collect(ctx, includeExcused)
+}
+
+// The plan for a named file is re-derived here rather than passed in, which is
+// what lets a worker reach the same answer as whatever picked the file without
+// a description of the work travelling between them.
+func (s *session) collectFiles(ctx context.Context, includeExcused bool) ([]item, *tally, error) {
+	var items []item
+	t := &tally{}
+
+	for _, arg := range s.paths {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		path, err := filepath.Abs(arg)
+		if err != nil {
+			return nil, nil, err
+		}
+		lib, ok := s.libraryFor(path)
+		if !ok {
+			return nil, nil, fmt.Errorf("%s is in no configured library", arg)
+		}
+		if !scan.Includes(lib, path) {
+			return nil, nil, fmt.Errorf("%s is not a file library %q covers", arg, lib.Name)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		t.total++
+
+		it, err := s.consider(ctx, lib, s.cfg.Profile(lib), path, info, includeExcused, t)
+		if err != nil {
+			// Named a file and could not judge it: no verdict was reached, so
+			// this is a fault rather than an answer about the media, and a
+			// retry is worth something.
+			return nil, nil, fmt.Errorf("%s: %w", arg, err)
+		}
+		if it != nil {
+			items = append(items, *it)
+		}
+	}
+	return items, t, nil
+}
+
+// The most specific library wins, so one nested inside another's tree still
+// gets its own profile.
+func (s *session) libraryFor(path string) (config.Library, bool) {
+	var best config.Library
+	bestLen := -1
+	for _, lib := range s.cfg.Libraries {
+		root, err := filepath.Abs(lib.Path)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		if len(root) > bestLen {
+			best, bestLen = lib, len(root)
+		}
+	}
+	return best, bestLen >= 0
 }
 
 type tally struct {
@@ -238,12 +337,12 @@ func cmdPlan(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	s, err := newSession(*cfgPath, *library, *limit, *verbose)
+	s, err := newSession(*cfgPath, *library, fs.Args(), *limit, *verbose)
 	if err != nil {
 		return err
 	}
 
-	items, t, err := s.collect(ctx, *showExcused)
+	items, t, err := s.selection(ctx, *showExcused)
 	if err != nil {
 		return err
 	}
@@ -272,7 +371,7 @@ func cmdApply(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	s, err := newSession(*cfgPath, *library, *limit, *verbose)
+	s, err := newSession(*cfgPath, *library, fs.Args(), *limit, *verbose)
 	if err != nil {
 		return err
 	}
@@ -294,7 +393,7 @@ func cmdApply(ctx context.Context, args []string) error {
 }
 
 func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
-	items, t, err := s.collect(ctx, retryExcused)
+	items, t, err := s.selection(ctx, retryExcused)
 	if err != nil {
 		return err
 	}
@@ -320,6 +419,7 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var failures int
+	var fatal error
 
 	for range s.cfg.Execution.Workers {
 		wg.Add(1)
@@ -329,19 +429,20 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
 				res, err := runner.Apply(ctx, it.plan, it.prof)
 				mu.Lock()
 				if err != nil {
-					failures++
-					fmt.Fprintf(os.Stderr, "  ! %s: %v\n", rel(it.lib, it.plan.File.Path), err)
-				} else {
-					report(it, res)
-					if res.Outcome == run.OutcomeFailed {
-						failures++
+					// Not once the context is done: the error is then this
+					// run being cancelled, reported once by pass itself.
+					if fatal == nil && ctx.Err() == nil {
+						fatal = fmt.Errorf("%s: %w", rel(it.lib, it.plan.File.Path), err)
 					}
-				}
-				mu.Unlock()
-				if err != nil {
+					mu.Unlock()
 					cancel()
 					return
 				}
+				report(it, res)
+				if res.Outcome == run.OutcomeFailed {
+					failures++
+				}
+				mu.Unlock()
 			}
 		}()
 	}
@@ -351,6 +452,9 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
 		case <-ctx.Done():
 			close(work)
 			wg.Wait()
+			if fatal != nil {
+				return fatal
+			}
 			return ctx.Err()
 		case work <- it:
 		}
@@ -358,12 +462,20 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
 	close(work)
 	wg.Wait()
 
-	if err := s.store.Save(); err != nil {
-		return err
+	if fatal != nil {
+		return fatal
+	}
+	if s.ownsCache {
+		if err := s.store.Save(); err != nil {
+			return err
+		}
 	}
 	t.print()
+	// A file that cannot be processed is a verdict, already recorded in the
+	// excuse ledger. Failing the run for it would have the ledger and a job
+	// runner's own retries multiply.
 	if failures > 0 {
-		return fmt.Errorf("%d file(s) could not be processed", failures)
+		fmt.Fprintf(os.Stderr, "%d file(s) could not be processed\n", failures)
 	}
 	return nil
 }

@@ -35,24 +35,8 @@ func Walk(lib config.Library) ([]Entry, error) {
 			}
 			return nil
 		}
-		if strings.HasPrefix(name, ".") {
+		if !Includes(lib, path) {
 			return nil
-		}
-		if !slices.Contains(lib.Extensions, strings.ToLower(filepath.Ext(name))) {
-			return nil
-		}
-
-		rel, relErr := filepath.Rel(lib.Path, path)
-		if relErr != nil {
-			rel = path
-		}
-		for _, pat := range lib.Exclude {
-			if ok, _ := filepath.Match(pat, rel); ok {
-				return nil
-			}
-			if ok, _ := filepath.Match(pat, name); ok {
-				return nil
-			}
 		}
 
 		info, infoErr := d.Info()
@@ -67,4 +51,31 @@ func Walk(lib config.Library) ([]Entry, error) {
 	}
 	slices.SortFunc(out, func(a, b Entry) int { return strings.Compare(a.Path, b.Path) })
 	return out, nil
+}
+
+// Includes reports whether one path is a file the library covers. Exported so
+// a worker handed a single path judges it by the same rules the walk applies,
+// rather than acting on a file a full pass would have skipped.
+func Includes(lib config.Library, path string) bool {
+	name := filepath.Base(path)
+	if strings.HasPrefix(name, ".") {
+		return false
+	}
+	if !slices.Contains(lib.Extensions, strings.ToLower(filepath.Ext(name))) {
+		return false
+	}
+
+	rel, err := filepath.Rel(lib.Path, path)
+	if err != nil {
+		rel = path
+	}
+	for _, pat := range lib.Exclude {
+		if ok, _ := filepath.Match(pat, rel); ok {
+			return false
+		}
+		if ok, _ := filepath.Match(pat, name); ok {
+			return false
+		}
+	}
+	return true
 }
