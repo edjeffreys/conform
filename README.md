@@ -3,8 +3,8 @@
 Bring a media library into line with a profile written in git — no GUI, no
 database of jobs.
 
-> **Status:** the reconciler, its tests and a container image. The Kubernetes
-> orchestrator, Helm chart and web UI described in [Distribution](#distribution)
+> **Status:** the reconciler, the Kubernetes orchestrator, tests and a container
+> image. The Helm chart and web UI mentioned in [Distribution](#distribution)
 > are designed but not yet built. What is here works standalone today.
 
 ## Why not Tdarr
@@ -165,20 +165,72 @@ is unsatisfiable rather than the file being bad, and the message says so.
 
 ## Distribution
 
-*Designed, not yet built.* One transcode is one ffmpeg process and splitting a
-single file across workers is rarely worth it, so conform parallelises across
-files instead.
+One transcode is one ffmpeg process and splitting a single file across workers
+is rarely worth it, so conform parallelises across files instead.
 
-Rather than ship a scheduler, conform uses Kubernetes as the queue: an
-orchestrator plans the library and creates one Job per non-conformant file,
-and the cluster scheduler places it. A profile carries its own placement
-requirements — device resources, node selectors, tolerations — which conform
-passes through without interpreting, so a job needing a specific encoder can
-only ever land somewhere that has one.
+Rather than ship a scheduler, conform uses Kubernetes as the queue. `conform
+orchestrate` plans the library and creates one Job per non-conformant file; the
+cluster scheduler places it; the Job runs `conform apply <path>`, which
+re-derives the same plan from the same config and exits 0 with its verdict
+recorded.
 
-The worker half of that is already here: a Job's container runs `conform apply`
-against one path, re-derives the plan from the same config, and exits 0 with its
-verdict recorded. What is missing is the orchestrator that creates the Jobs.
+```sh
+conform orchestrate -config /config/conform.yaml -dry-run -verbose  # the Jobs it would create
+conform orchestrate -config /config/conform.yaml -interval 6h       # keep the library topped up
+```
+
+`-dry-run` creates nothing, but still reads the cluster: a Job *is* the
+profile's PodTemplate with a path appended, so there is nothing to show without
+fetching it.
+
+### Placement is data
+
+A profile names a `core/v1 PodTemplate` and conform copies it — device
+resources, node selectors, tolerations, the mounts that make the library
+visible — without interpreting any of it. conform never learns what a GPU is,
+so this works against any device plugin.
+
+```yaml
+apiVersion: v1
+kind: PodTemplate
+metadata:
+  name: conform-qsv
+  namespace: media
+template:
+  spec:
+    containers:
+      - name: conform
+        image: ghcr.io/edjeffreys/conform:latest
+        args: ["apply", "-config", "/config/conform.yaml"]   # conform appends the path
+        resources:
+          limits:
+            gpu.intel.com/i915: 1
+```
+
+The path is *appended* to the container's args rather than replacing them, so
+the subcommand and any flags stay in the template with the rest of the
+placement data. A container declaring no args is an error, not a default: the
+path would otherwise become the whole command line.
+
+### Still no job database
+
+A Job's name is a hash of the file's path, size and mtime, so creating one that
+already exists is how a later pass discovers the file is in flight — the
+cluster holds the queue, and conform holds nothing. Size and mtime are in the
+hash so a replaced file gets a new name instead of colliding with the finished
+Job of its predecessor.
+
+`orchestrator.maxActive` caps the Jobs in flight; whatever is over the cap is
+simply not created, and the next pass re-derives it from the library the same
+way it derived this one.
+
+This is also where [exit status](#exit-status) earns its keep. `backoffLimit`
+retries infrastructure faults; the excuse ledger owns files that cannot be
+encoded. Because a media verdict exits 0, the two never multiply.
+
+Not built yet: a Helm chart, and a web UI that observes and triggers. Desired
+state stays in git — an editable profile in a web form rebuilds the problem
+conform exists to solve.
 
 ## Licence
 

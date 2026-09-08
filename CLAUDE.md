@@ -70,6 +70,7 @@ cmd/conform/     the binary; one file per subcommand's plumbing
 internal/
   config/        desired state — profiles, libraries, execution settings
   media/         observed state — ffprobe, normalised into media.File
+  orchestrate/   turning a plan into one Kubernetes Job per file
   plan/          the diff, and rendering it as ffmpeg arguments
   run/           executing one plan: encode, verify, replace
   scan/          walking a library
@@ -78,7 +79,11 @@ internal/
 
 ## Testing
 
-`go test ./...`. `config`, `plan` and `state` have tests; `run` and `media` do
-not, because both shell out. Prefer growing the table tests in
-`plan/plan_test.go` — the planner is where correctness actually lives, and it is
-pure, so it is cheap to test exhaustively.
+`go test ./...`. `media` has no tests, because it shells out; `run` is tested
+only where it does not. Prefer growing the table tests in `plan/plan_test.go` —
+the planner is where correctness actually lives, and it is pure, so it is cheap
+to test exhaustively.
+
+`orchestrate` keeps the cluster behind a `Kube` interface, so building a Job is
+tested without one. Keep it that way: everything that decides what a Job says
+belongs on the pure side of that line.

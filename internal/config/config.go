@@ -11,9 +11,10 @@ import (
 )
 
 type Config struct {
-	Libraries []Library          `yaml:"libraries"`
-	Profiles  map[string]Profile `yaml:"profiles"`
-	Execution Execution          `yaml:"execution"`
+	Libraries    []Library          `yaml:"libraries"`
+	Profiles     map[string]Profile `yaml:"profiles"`
+	Execution    Execution          `yaml:"execution"`
+	Orchestrator Orchestrator       `yaml:"orchestrator"`
 }
 
 type Library struct {
@@ -36,6 +37,18 @@ type Profile struct {
 	Video      VideoRules    `yaml:"video"`
 	Audio      AudioRules    `yaml:"audio"`
 	Subtitles  SubtitleRules `yaml:"subtitles"`
+	Job        JobSpec       `yaml:"job"`
+}
+
+// JobSpec names the PodTemplate a distributed run copies for this profile.
+// Everything about placement — device resources, node selectors, tolerations,
+// the mounts that make the library visible — lives in that template, which
+// conform copies without interpreting. Only needed to orchestrate.
+type JobSpec struct {
+	PodTemplate string `yaml:"podTemplate"`
+	// Container whose args the file path is appended to. Named rather than
+	// taken positionally so a template carrying a sidecar fails loudly.
+	Container string `yaml:"container"`
 }
 
 type VideoRules struct {
@@ -97,6 +110,18 @@ type Owner struct {
 	GID int `yaml:"gid"`
 }
 
+type Orchestrator struct {
+	Namespace string `yaml:"namespace"`
+	// MaxActive caps the Jobs in flight. Without it one pass over a large
+	// library creates an API object per non-conformant file, all at once.
+	MaxActive int `yaml:"maxActive"`
+
+	// Pointers because zero is a meaningful setting for both: delete a
+	// finished Job at once, and never retry a failed one.
+	TTLSecondsAfterFinished *int32 `yaml:"ttlSecondsAfterFinished"`
+	BackoffLimit            *int32 `yaml:"backoffLimit"`
+}
+
 var DefaultExtensions = []string{".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".mpg", ".mpeg"}
 
 func Load(path string) (*Config, error) {
@@ -141,6 +166,22 @@ func (c *Config) applyDefaults() {
 		e.StateDir = "."
 	}
 
+	o := &c.Orchestrator
+	if o.Namespace == "" {
+		o.Namespace = "default"
+	}
+	if o.MaxActive <= 0 {
+		o.MaxActive = 8
+	}
+	if o.TTLSecondsAfterFinished == nil {
+		o.TTLSecondsAfterFinished = ptr(int32(3600))
+	}
+	if o.BackoffLimit == nil {
+		// Infrastructure faults are what a Job retry is for; a file that
+		// cannot be encoded exits 0 and is owned by the excuse ledger.
+		o.BackoffLimit = ptr(int32(2))
+	}
+
 	for i := range c.Libraries {
 		if len(c.Libraries[i].Extensions) == 0 {
 			c.Libraries[i].Extensions = DefaultExtensions
@@ -154,6 +195,9 @@ func (c *Config) applyDefaults() {
 	}
 
 	for name, p := range c.Profiles {
+		if p.Job.Container == "" {
+			p.Job.Container = "conform"
+		}
 		if p.Video.ScaleFilter == "" {
 			p.Video.ScaleFilter = "scale=-2:{height}"
 		}
@@ -210,6 +254,8 @@ func (c *Config) Validate() error {
 
 // Profile assumes Validate has run, which guarantees the profile exists.
 func (c *Config) Profile(l Library) Profile { return c.Profiles[l.Profile] }
+
+func ptr[T any](v T) *T { return &v }
 
 func lowerAll(in []string) []string {
 	out := make([]string, len(in))

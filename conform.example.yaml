@@ -41,6 +41,16 @@ profiles:
         options:
           b: "640k"
 
+    # Only read by `conform orchestrate`. The PodTemplate carries everything
+    # about placement — the device resource, the node selector, the mounts that
+    # make the library visible — and conform copies it without interpreting any
+    # of it, so a profile can require hardware conform knows nothing about.
+    job:
+      podTemplate: conform-qsv
+      # The container whose args the file path is appended to. It must already
+      # declare the subcommand and flags: conform only adds the path.
+      container: conform
+
     subtitles:
       languages: [eng, und]
       # Image-based PGS is kept, not converted — see the planner. Anything
@@ -59,3 +69,15 @@ execution:
   owner:
     uid: 3000
     gid: 3000
+
+# Only read by `conform orchestrate`.
+orchestrator:
+  namespace: media
+  # Jobs in flight. Without a cap, one pass over a large library creates an API
+  # object per non-conformant file, all at once; the rest are picked up by the
+  # next pass, which re-derives them from the library anyway.
+  maxActive: 4
+  ttlSecondsAfterFinished: 3600
+  # Retries are for infrastructure faults. A file that cannot be encoded exits
+  # 0 and is owned by the excuse ledger, so the two never multiply.
+  backoffLimit: 2

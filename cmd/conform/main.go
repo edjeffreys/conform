@@ -22,10 +22,13 @@ import (
 
 	"github.com/edjeffreys/conform/internal/config"
 	"github.com/edjeffreys/conform/internal/media"
+	"github.com/edjeffreys/conform/internal/orchestrate"
 	"github.com/edjeffreys/conform/internal/plan"
 	"github.com/edjeffreys/conform/internal/run"
 	"github.com/edjeffreys/conform/internal/scan"
 	"github.com/edjeffreys/conform/internal/state"
+
+	"sigs.k8s.io/yaml"
 )
 
 var version = "dev"
@@ -56,6 +59,8 @@ func realMain() error {
 		return cmdPlan(ctx, os.Args[2:])
 	case "apply":
 		return cmdApply(ctx, os.Args[2:])
+	case "orchestrate":
+		return cmdOrchestrate(ctx, os.Args[2:])
 	case "version", "-v", "--version":
 		fmt.Println("conform", version)
 		return nil
@@ -74,20 +79,26 @@ func usage() {
   conform probe <file>          print what ffprobe sees, as conform models it
   conform plan  [flags] [file]  show what would change; touches nothing
   conform apply [flags] [file]  make it so
+  conform orchestrate [flags]   create one Kubernetes Job per file needing work
 
 Named files are judged by the library that contains them. With none given,
 every configured library is walked.
 
-Flags for plan and apply:
+Flags for plan, apply and orchestrate:
   -config PATH    config file (default conform.yaml)
   -library NAME   restrict to one library
   -limit N        stop after N files needing work
-  -verbose        log the ffmpeg command lines
+  -verbose        log the ffmpeg command lines, or the jobs orchestrate builds
 
 Flags for apply only:
-  -dry-run        plan only, but through the apply path
   -retry-excused  reconsider files previously excused after a failure
+
+Flags for apply and orchestrate:
+  -dry-run        go through the motions, change nothing
   -interval D     repeat forever, waiting D between passes (e.g. 6h)
+
+Flags for orchestrate only:
+  -kubeconfig P   use this kubeconfig rather than the in-cluster account
 `)
 }
 
@@ -376,20 +387,92 @@ func cmdApply(ctx context.Context, args []string) error {
 		return err
 	}
 
+	return repeat(ctx, *interval, func() error { return s.pass(ctx, *dryRun, *retryExcused) })
+}
+
+func repeat(ctx context.Context, interval time.Duration, pass func() error) error {
 	for {
-		if err := s.pass(ctx, *dryRun, *retryExcused); err != nil {
+		if err := pass(); err != nil {
 			return err
 		}
-		if *interval == 0 {
+		if interval == 0 {
 			return nil
 		}
-		fmt.Printf("\nnext pass in %s\n", *interval)
+		fmt.Printf("\nnext pass in %s\n", interval)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(*interval):
+		case <-time.After(interval):
 		}
 	}
+}
+
+func cmdOrchestrate(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("orchestrate", flag.ExitOnError)
+	cfgPath, library, limit, verbose := planFlags(fs)
+	dryRun := fs.Bool("dry-run", false, "build the jobs and create none")
+	kubeconfig := fs.String("kubeconfig", "", "kubeconfig to use instead of the in-cluster account")
+	interval := fs.Duration("interval", 0, "repeat forever, waiting this long between passes")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return errors.New("orchestrate plans libraries and names the files itself; it takes no file arguments")
+	}
+	s, err := newSession(*cfgPath, *library, nil, *limit, *verbose)
+	if err != nil {
+		return err
+	}
+
+	// Needed even to dry-run: the Job is the profile's PodTemplate with the
+	// path appended, so there is nothing to render without reading it.
+	kube, err := orchestrate.NewKube(*kubeconfig)
+	if err != nil {
+		return err
+	}
+	o := &orchestrate.Orchestrator{Kube: kube, Opts: s.cfg.Orchestrator, DryRun: *dryRun}
+	return repeat(ctx, *interval, func() error { return s.dispatch(ctx, o) })
+}
+
+func (s *session) dispatch(ctx context.Context, o *orchestrate.Orchestrator) error {
+	items, t, err := s.selection(ctx, false)
+	if err != nil {
+		return err
+	}
+
+	reqs := make([]orchestrate.Request, 0, len(items))
+	for _, it := range items {
+		reqs = append(reqs, orchestrate.Request{
+			File: it.plan.File, Profile: it.prof, Library: it.lib.Name,
+		})
+	}
+
+	// Reported before the error is returned: a dispatch that stops partway has
+	// already created Jobs, and they are not undone by failing here.
+	out, dispatchErr := o.Dispatch(ctx, reqs)
+	for i, d := range out {
+		name := d.Path
+		if i < len(items) {
+			name = rel(items[i].lib, d.Path)
+		}
+		if d.Job == nil {
+			fmt.Printf("%-9s %s\n", d.Outcome, name)
+			continue
+		}
+		fmt.Printf("%-9s %s → %s\n", d.Outcome, name, d.Name())
+		if s.verbose {
+			y, err := yaml.Marshal(d.Job)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("---\n%s", y)
+		}
+	}
+	if dispatchErr != nil {
+		return dispatchErr
+	}
+	t.print()
+	return nil
 }
 
 func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
