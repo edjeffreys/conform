@@ -32,3 +32,8 @@ jobs:
 
       - run: go vet ./...
       - run: go test ./...
+
+      # Nothing else here runs Python, so a broken hook would only surface as a
+      # failing tool call mid-session.
+      - name: Check hooks parse
+        run: python3 -m py_compile .claude/hooks/*.py
