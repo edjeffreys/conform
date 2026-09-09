@@ -46,6 +46,9 @@ type Profile struct {
 // conform copies without interpreting. Only needed to orchestrate.
 type JobSpec struct {
 	PodTemplate string `yaml:"podTemplate"`
+	// Used instead when the plan re-encodes the picture, so remuxes are not
+	// serialised behind it on the one node holding a device.
+	VideoTemplate string `yaml:"videoTemplate"`
 	// Container whose args the file path is appended to. Named rather than
 	// taken positionally so a template carrying a sidecar fails loudly.
 	Container string `yaml:"container"`

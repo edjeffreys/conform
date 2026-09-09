@@ -47,6 +47,16 @@ type Request struct {
 	File    *media.File
 	Profile config.Profile
 	Library string
+	// Decided by the caller from the plan, so orchestrate still knows nothing
+	// about media — only which of the profile's templates to copy.
+	VideoEncode bool
+}
+
+func (r Request) template() string {
+	if r.VideoEncode && r.Profile.Job.VideoTemplate != "" {
+		return r.Profile.Job.VideoTemplate
+	}
+	return r.Profile.Job.PodTemplate
 }
 
 type Outcome string
@@ -181,7 +191,7 @@ func (o *Orchestrator) Dispatch(ctx context.Context, reqs []Request) ([]Dispatch
 			continue
 		}
 
-		name := req.Profile.Job.PodTemplate
+		name := req.template()
 		if name == "" {
 			return out, fmt.Errorf("%s: its profile names no podTemplate", req.File.Path)
 		}

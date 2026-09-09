@@ -81,6 +81,17 @@ func (p *Plan) AddsStreams() bool {
 	return false
 }
 
+// EncodesVideo separates the work that needs a GPU from the work that only
+// looks like it does: an audio re-encode is a transcode too.
+func (p *Plan) EncodesVideo() bool {
+	for _, s := range p.Streams {
+		if s.Type == media.Video && s.Codec != Copy {
+			return true
+		}
+	}
+	return false
+}
+
 func (p *Plan) transcodes() bool {
 	for _, s := range p.Streams {
 		if s.Codec != Copy {

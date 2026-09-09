@@ -488,6 +488,7 @@ func (s *session) dispatch(ctx context.Context, o *orchestrate.Orchestrator) err
 	for _, it := range items {
 		reqs = append(reqs, orchestrate.Request{
 			File: it.plan.File, Profile: it.prof, Library: it.lib.Name,
+			VideoEncode: it.plan.EncodesVideo(),
 		})
 	}
 

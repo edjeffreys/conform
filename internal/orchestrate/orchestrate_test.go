@@ -2,6 +2,7 @@ package orchestrate
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -151,11 +152,15 @@ type fakeKube struct {
 	exists    map[string]bool
 	created   []*batchv1.Job
 	templates int
+	names     []string
 }
 
 func (k *fakeKube) PodTemplate(_ context.Context, _, name string) (*corev1.PodTemplate, error) {
 	k.templates++
-	return template(worker()), nil
+	k.names = append(k.names, name)
+	t := template(worker())
+	t.Name = name
+	return t, nil
 }
 
 func (k *fakeKube) ActiveJobs(context.Context, string) (int, error) { return k.active, nil }
@@ -229,6 +234,50 @@ func TestDispatchCreatesNothingWhenDryRun(t *testing.T) {
 	}
 	if out[0].Job == nil {
 		t.Error("dry run should still build the Job it would create")
+	}
+}
+
+func TestRequestPicksTheTemplateItsWorkNeeds(t *testing.T) {
+	both := request()
+	both.Profile.Job.VideoTemplate = "conform-qsv"
+	both.Profile.Job.PodTemplate = "conform-cpu"
+
+	remux, video := both, both
+	video.VideoEncode = true
+
+	if got := remux.template(); got != "conform-cpu" {
+		t.Errorf("remux placed on %q; it needs no device", got)
+	}
+	if got := video.template(); got != "conform-qsv" {
+		t.Errorf("video encode placed on %q", got)
+	}
+
+	// Existing profiles name one template and must not change placement.
+	only := request()
+	only.VideoEncode = true
+	if got := only.template(); got != "conform-qsv" {
+		t.Errorf("template = %q, want the profile's only one", got)
+	}
+}
+
+func TestDispatchFetchesATemplatePerPool(t *testing.T) {
+	reqs := requests(3)
+	for i := range reqs {
+		reqs[i].Profile.Job.PodTemplate = "conform-cpu"
+		reqs[i].Profile.Job.VideoTemplate = "conform-qsv"
+	}
+	reqs[1].VideoEncode = true
+
+	k := &fakeKube{}
+	o := &Orchestrator{Kube: k, Opts: opts(), DryRun: true}
+	if _, err := o.Dispatch(context.Background(), reqs); err != nil {
+		t.Fatal(err)
+	}
+	if k.templates != 2 {
+		t.Errorf("fetched %d templates, want 2", k.templates)
+	}
+	if len(k.names) != 2 || !slices.Contains(k.names, "conform-cpu") || !slices.Contains(k.names, "conform-qsv") {
+		t.Errorf("fetched %v", k.names)
 	}
 }
 
