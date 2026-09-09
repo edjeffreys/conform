@@ -92,6 +92,7 @@ Flags for plan, apply and orchestrate:
 
 Flags for apply only:
   -retry-excused  reconsider files previously excused after a failure
+  -ffmpeg-output  stream ffmpeg's own output while it runs
 
 Flags for apply and orchestrate:
   -dry-run        go through the motions, change nothing
@@ -103,13 +104,14 @@ Flags for orchestrate only:
 }
 
 type session struct {
-	cfg     *config.Config
-	prober  *media.Prober
-	store   *state.Store
-	paths   []string
-	limit   int
-	library string
-	verbose bool
+	cfg       *config.Config
+	prober    *media.Prober
+	store     *state.Store
+	paths     []string
+	limit     int
+	library   string
+	verbose   bool
+	ffmpegOut bool
 	// The probe cache has a single owner. A pass over whole libraries is that
 	// owner; a worker handed individual paths runs alongside others against
 	// the same cache, so it reads it and never writes it.
@@ -358,13 +360,7 @@ func cmdPlan(ctx context.Context, args []string) error {
 		return err
 	}
 	for _, it := range items {
-		fmt.Printf("%-9s %s\n", it.plan.Action, rel(it.lib, it.plan.File.Path))
-		for _, why := range it.plan.Reasons {
-			fmt.Printf("          · %s\n", why)
-		}
-		for _, d := range it.plan.Dropped {
-			fmt.Printf("          − drop %s stream %d (%s)\n", d.Type, d.Source, d.Reason)
-		}
+		describe(it)
 		if *verbose {
 			fmt.Printf("          $ %s %v\n", s.cfg.Execution.FFmpeg, it.plan.FFmpegArgs(it.plan.File.Path, "OUTPUT"+media.Ext(it.plan.Container)))
 		}
@@ -373,12 +369,59 @@ func cmdPlan(ctx context.Context, args []string) error {
 	return nil
 }
 
+func describe(it item) {
+	fmt.Printf("%-9s %s\n", it.plan.Action, rel(it.lib, it.plan.File.Path))
+	for _, why := range it.plan.Reasons {
+		fmt.Printf("          · %s\n", why)
+	}
+	for _, d := range it.plan.Dropped {
+		fmt.Printf("          − drop %s stream %d (%s)\n", d.Type, d.Source, d.Reason)
+	}
+	if enc := encodes(it.plan); enc != "" {
+		fmt.Printf("          → %s\n", enc)
+	}
+}
+
+// A software fallback on a node picked for its device is both far slower and a
+// sign the placement is wrong, so the video encoder says which it is.
+func encodes(p *plan.Plan) string {
+	var out []string
+	for _, s := range p.Streams {
+		if s.Codec == plan.Copy {
+			continue
+		}
+		what := fmt.Sprintf("%s %s", s.Type, s.Codec)
+		if s.Type == media.Video {
+			if hw := hwaccel(p.InputArgs); hw != "" {
+				what += " (" + hw + ")"
+			} else {
+				what += " (software)"
+			}
+		}
+		out = append(out, what)
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	return "encode " + strings.Join(out, ", ")
+}
+
+func hwaccel(inputArgs []string) string {
+	for i, a := range inputArgs {
+		if a == "-hwaccel" && i+1 < len(inputArgs) {
+			return inputArgs[i+1]
+		}
+	}
+	return ""
+}
+
 func cmdApply(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("apply", flag.ExitOnError)
 	cfgPath, library, limit, verbose := planFlags(fs)
 	dryRun := fs.Bool("dry-run", false, "plan only")
 	retryExcused := fs.Bool("retry-excused", false, "reconsider previously excused files")
 	interval := fs.Duration("interval", 0, "repeat forever, waiting this long between passes")
+	ffmpegOut := fs.Bool("ffmpeg-output", false, "stream ffmpeg's own output while it runs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -386,6 +429,7 @@ func cmdApply(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	s.ffmpegOut = *ffmpegOut
 
 	return repeat(ctx, *interval, func() error { return s.pass(ctx, *dryRun, *retryExcused) })
 }
@@ -497,6 +541,9 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
 	if s.verbose {
 		runner.Logf = func(f string, a ...any) { fmt.Printf("          $ "+f+"\n", a...) }
 	}
+	if s.ffmpegOut {
+		runner.FFmpegOutput = os.Stderr
+	}
 
 	work := make(chan item)
 	var wg sync.WaitGroup
@@ -509,6 +556,9 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
 		go func() {
 			defer wg.Done()
 			for it := range work {
+				mu.Lock()
+				describe(it)
+				mu.Unlock()
 				res, err := runner.Apply(ctx, it.plan, it.prof)
 				mu.Lock()
 				if err != nil {

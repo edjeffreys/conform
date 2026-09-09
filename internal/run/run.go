@@ -46,6 +46,9 @@ type Runner struct {
 	Prober *media.Prober
 	Store  *state.Store
 	Logf   func(format string, args ...any)
+	// Nil still captures stderr for the failure detail; this only decides
+	// whether it is also seen while the encode runs.
+	FFmpegOutput io.Writer
 }
 
 func (r *Runner) logf(format string, args ...any) {
@@ -84,7 +87,7 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 
 	args := p.FFmpegArgs(src, tmp)
 	r.logf("ffmpeg %s", strings.Join(args, " "))
-	if out, err := runFFmpeg(ctx, r.Exec.FFmpeg, args); err != nil {
+	if out, err := runFFmpeg(ctx, r.Exec.FFmpeg, args, r.FFmpegOutput); err != nil {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
 		}
@@ -135,6 +138,7 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 	if again := plan.Build(out, prof); again.Action != plan.ActionNone {
 		return fmt.Sprintf("output still does not satisfy the profile (%s) — the profile is likely unsatisfiable, not the file", again), false
 	}
+	r.logf("verified: probes, %.1fs against %.1fs, re-plans as none", out.Duration, p.File.Duration)
 
 	// A remux can grow from container overhead alone, so refusing it on size
 	// would block a change that costs nothing. Nor does the check apply when
@@ -249,10 +253,13 @@ func pathHash(src string) string {
 
 // Only the tail of stderr: ffmpeg writes progress there too, so the rest is
 // noise.
-func runFFmpeg(ctx context.Context, bin string, args []string) (string, error) {
+func runFFmpeg(ctx context.Context, bin string, args []string, stream io.Writer) (string, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
+	if stream != nil {
+		cmd.Stderr = io.MultiWriter(&stderr, stream)
+	}
 	cmd.Stdout = io.Discard
 	err := cmd.Run()
 	return tail(stderr.String(), 12), err
