@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/edjeffreys/conform/internal/config"
@@ -153,7 +154,7 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 }
 
 // Staged in the source's own directory so the commit is a rename within one
-// filesystem, which is atomic; the temp dir is usually a different volume.
+// filesystem, which is atomic.
 func (r *Runner) replace(tmp, src, container string) (string, error) {
 	final := finalPath(src, container)
 	if detail, ok := destinationFree(src, container); !ok {
@@ -164,7 +165,7 @@ func (r *Runner) replace(tmp, src, container string) (string, error) {
 	// share a basename, and would otherwise stage to the same place.
 	staging := filepath.Join(filepath.Dir(src), ".conform-"+pathHash(src)+media.Ext(container))
 
-	if err := copyFile(tmp, staging); err != nil {
+	if err := stage(tmp, staging); err != nil {
 		os.Remove(staging)
 		return "", fmt.Errorf("stage beside source: %w", err)
 	}
@@ -255,6 +256,33 @@ func runFFmpeg(ctx context.Context, bin string, args []string) (string, error) {
 	cmd.Stdout = io.Discard
 	err := cmd.Run()
 	return tail(stderr.String(), 12), err
+}
+
+// Rename rather than compare device numbers: it is the operation that has to
+// succeed, and a copy is a second full pass over the file.
+func stage(tmp, staging string) error {
+	switch err := os.Rename(tmp, staging); {
+	case err == nil:
+		return syncFile(staging)
+	case errors.Is(err, syscall.EXDEV):
+		return copyFile(tmp, staging)
+	default:
+		return err
+	}
+}
+
+// The rename above moves an entry ffmpeg may only have written into cache, so
+// it needs the same durability copyFile gives its own writes.
+func syncFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 func copyFile(src, dst string) error {

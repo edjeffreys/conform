@@ -115,6 +115,56 @@ func TestReplaceLeavesNoStagingFile(t *testing.T) {
 	}
 }
 
+// The copy this avoids is a second full pass over a file of tens of GB.
+func TestStageConsumesTheTempFileWhenItCanRename(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "encoded.mkv")
+	staging := filepath.Join(dir, ".conform-abc.mkv")
+	write(t, tmp, "the transcode")
+
+	if err := stage(tmp, staging); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, staging); got != "the transcode" {
+		t.Errorf("staged %q, want the transcode", got)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Error("the temp file survived, so this was a copy and not a rename")
+	}
+}
+
+// The opposite of the above, and the caller's deferred remove relies on it.
+func TestStageFallsBackToACopyThatKeepsTheSource(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "encoded.mkv")
+	staging := filepath.Join(dir, ".conform-abc.mkv")
+	write(t, tmp, "the transcode")
+
+	if err := copyFile(tmp, staging); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(t, staging); got != "the transcode" {
+		t.Errorf("staged %q, want the transcode", got)
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		t.Errorf("the temp file should survive a copy: %v", err)
+	}
+}
+
+func TestStageReportsAFailureThatIsNotCrossDevice(t *testing.T) {
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "encoded.mkv")
+	write(t, tmp, "the transcode")
+
+	// A missing parent fails for a reason no copy would recover from.
+	if err := stage(tmp, filepath.Join(dir, "absent", "x.mkv")); err == nil {
+		t.Error("stage succeeded into a missing directory")
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		t.Errorf("a failed stage consumed the temp file: %v", err)
+	}
+}
+
 func TestDestinationFree(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "Taken.mkv"), "x")
