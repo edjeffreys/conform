@@ -112,6 +112,34 @@ func TestCoverArtIsCarriedNotJudged(t *testing.T) {
 	}
 }
 
+// Without this, a poster reads as a second video stream and the whole file is
+// re-encoded to make a 400x225 still conform.
+func TestCoverArtIsRecognisedWithoutTheDisposition(t *testing.T) {
+	for _, codec := range []string{"png", "mjpeg", "gif", "bmp", "webp"} {
+		t.Run(codec, func(t *testing.T) {
+			art := media.Stream{Type: media.Video, Codec: codec, Height: 225}
+			f := file("mkv", vid("hevc", 1080), art, aud("aac", "eng", 2))
+			p := Build(f, profile())
+			if p.Action != ActionNone {
+				t.Fatalf("got %s, want none: %s", p.Action, p)
+			}
+			if !slices.ContainsFunc(p.Streams, func(s StreamPlan) bool { return s.Source == 1 && s.Codec == Copy }) {
+				t.Error("cover art was not carried through")
+			}
+		})
+	}
+}
+
+// Matching on codec must not swallow the real video sitting alongside the art.
+func TestARealVideoStreamIsStillJudged(t *testing.T) {
+	art := media.Stream{Type: media.Video, Codec: "png", Height: 225}
+	f := file("mkv", vid("h264", 1080), art, aud("aac", "eng", 2))
+	p := Build(f, profile())
+	if p.Action != ActionTranscode {
+		t.Errorf("got %s, want transcode: h264 is still not hevc", p.Action)
+	}
+}
+
 func TestDownmixSetsChannelCount(t *testing.T) {
 	f := file("mkv", vid("hevc", 1080), aud("aac", "eng", 8))
 	p := Build(f, profile())

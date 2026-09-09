@@ -90,6 +90,16 @@ func (p *Plan) transcodes() bool {
 	return false
 }
 
+// Cover art is supposed to carry attached_pic, but plenty of files leave the
+// disposition unset, and then the codec is the only signal left.
+var stillImage = map[string]bool{
+	"png": true, "mjpeg": true, "gif": true, "bmp": true, "webp": true,
+}
+
+func coverArt(s media.Stream) bool {
+	return s.AttachedPic || stillImage[s.Codec]
+}
+
 func Build(f *media.File, prof config.Profile) *Plan {
 	p := &Plan{File: f, Container: prof.Container, OutputArgs: prof.OutputArgs}
 
@@ -97,7 +107,7 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	// every file with a poster as needing a re-encode of one still frame.
 	var realVideo []media.Stream
 	for _, s := range f.Streams {
-		if s.Type == media.Video && s.AttachedPic {
+		if s.Type == media.Video && coverArt(s) {
 			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy,
 				Language: s.Language, Reason: "cover art"})
 			continue
