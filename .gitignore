@@ -10,3 +10,6 @@
 
 # macOS.
 .DS_Store
+
+# Review notes and scratch work. Not a tracker; not shared.
+/.todo/
