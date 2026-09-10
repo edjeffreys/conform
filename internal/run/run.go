@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -49,6 +50,9 @@ type Runner struct {
 	// Nil still captures stderr for the failure detail; this only decides
 	// whether it is also seen while the encode runs.
 	FFmpegOutput io.Writer
+
+	deviceMu sync.Mutex
+	devices  map[string]error
 }
 
 func (r *Runner) logf(format string, args ...any) {
@@ -79,6 +83,14 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 		return res, nil
 	}
 
+	// Before the encode, so a worker whose hardware is missing fails on its
+	// first file instead of charging every file in the library an excuse.
+	if _, spec := p.HWDevice(); spec != "" {
+		if err := r.checkDevice(ctx, spec); err != nil {
+			return res, err
+		}
+	}
+
 	tmp, err := r.tempPath(src, p.Container)
 	if err != nil {
 		return res, err
@@ -90,6 +102,9 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 	if out, err := runFFmpeg(ctx, r.Exec.FFmpeg, args, r.FFmpegOutput); err != nil {
 		if ctx.Err() != nil {
 			return res, ctx.Err()
+		}
+		if sig := deviceFault(out); sig != "" {
+			return res, faultError(fmt.Sprintf("the hardware device failed during the encode (%s)", sig), out)
 		}
 		return r.fail(src, p, res, fmt.Sprintf("ffmpeg: %v: %s", err, out)), nil
 	}

@@ -26,10 +26,18 @@ RUN . /etc/os-release \
       ffmpeg \
       intel-media-va-driver-non-free \
       libvpl2 \
+      libmfx-gen1.2 \
       vainfo \
       ca-certificates \
       tini \
  && rm -rf /var/lib/apt/lists/*
+
+# libvpl2 is only the dispatcher. Without an implementation behind it every
+# qsv encode fails at runtime with "Error creating a MFX session: -9", and the
+# build cannot catch that by opening a device because there is no GPU here.
+# libmfx-gen covers Gen11 and newer; older parts have no runtime in trixie and
+# want the hevc_vaapi profile instead.
+RUN ls /usr/lib/*/libmfx-gen.so.* > /dev/null
 
 COPY --from=build /out/conform /usr/local/bin/conform
 

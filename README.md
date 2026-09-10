@@ -86,15 +86,26 @@ processed". That outcome is already recorded as an excuse, and failing the run
 for it as well would have the ledger and a job runner's own retries multiply.
 
 Non-zero is a fault: a bad config, a path no library covers, a directory that
-cannot be read, ffmpeg missing. Those are worth retrying; a file that will not
-encode is not.
+cannot be read, ffmpeg missing, a hardware encoder that cannot open its device.
+Those are worth retrying; a file that will not encode is not.
+
+The last of those is the one that has to be got right. A worker whose GPU is
+missing fails every file it is given, and an excuse keys on the file — so a
+broken image would quietly spend each file's error budget until the whole
+library was excused for a fault none of it had. Where a profile names a
+hardware encoder, conform therefore creates the device *before* encoding
+anything and exits non-zero if it cannot, and treats ffmpeg's device-setup
+errors as faults if one appears mid-encode. The check runs once per worker.
 
 Run the tests with `go test ./...`.
 
 ## Config
 
 `conform.local.yaml` is a software-encoder profile that runs anywhere.
-`conform.example.yaml` is the same rules against Intel QuickSync.
+`conform.example.yaml` is the same rules against Intel QuickSync. QuickSync
+needs the oneVPL runtime for Gen11 or newer silicon, which the image ships;
+older Intel parts have no runtime in current Debian and want `hevc_vaapi`,
+which drives the same hardware through the layer underneath.
 
 Every rule is a predicate on what is **acceptable**, never an instruction to
 act. A file satisfying all of them is left alone. Rules left empty impose no

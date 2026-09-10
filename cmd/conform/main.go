@@ -392,11 +392,16 @@ func encodes(p *plan.Plan) string {
 		}
 		what := fmt.Sprintf("%s %s", s.Type, s.Codec)
 		if s.Type == media.Video {
-			if hw := hwaccel(p.InputArgs); hw != "" {
-				what += " (" + hw + ")"
-			} else {
-				what += " (software)"
+			hw := hwaccel(p.InputArgs)
+			if hw == "" {
+				// An encoder can drive a device without a hardware decode
+				// flag to go with it, and reads as software without this.
+				hw, _ = p.HWDevice()
 			}
+			if hw == "" {
+				hw = "software"
+			}
+			what += " (" + hw + ")"
 		}
 		out = append(out, what)
 	}
