@@ -1,19 +1,122 @@
 # conform
 
-Bring a media library into line with a profile written in git — no GUI, no
-database of jobs.
+Keep a media library in line with a profile you write in git. No GUI, no
+database of jobs, no clicking through flow builders.
+
+You describe what an acceptable file looks like. conform probes what you have,
+works out the difference, and closes it.
 
 > **Status:** the reconciler, the Kubernetes orchestrator, tests and a container
-> image. The Helm chart and web UI mentioned in [Distribution](#distribution)
-> are designed but not yet built. What is here works standalone today.
+> image all work today. The Helm chart and web UI under
+> [Distribution](#distribution) are designed but not built yet.
 
-## Why not Tdarr
+## What it looks like
 
-Tdarr's flows, plugins and library settings live in its own MongoDB, edited
-through a web UI. The container is declarable; everything that decides what it
-actually *does* is not. That is the whole reason this exists.
+`plan` reads your library and tells you what it would change. It touches
+nothing:
 
-## The model
+```
+~/Projects/conform main
+❯ ./conform plan -config conform.local.yaml -verbose
+
+transcode sample.mp4
+          · video: codec h264 not in hevc
+          · container mp4 is not mkv
+          $ ffmpeg [-hide_banner -nostdin -y -i media/sample.mp4 -map 0:0 -map 0:1 -c:v:0 libx265 -crf:v:0 28 -preset:v:0 veryfast -x265-params:v:0 log-level=error -c:a:0 copy -map_metadata 0 -map_chapters 0 OUTPUT.mkv]
+
+1 files — 0 conformant, 0 remux, 1 transcode
+```
+
+Two reasons this file falls short, and the exact ffmpeg command that would fix
+it. `apply` runs it:
+
+```
+~/Projects/conform main
+❯ ./conform apply -config conform.local.yaml -verbose
+
+          $ ffmpeg -hide_banner -nostdin -y -i media/sample.mp4 -map 0:0 -map 0:1 -c:v:0 libx265 -crf:v:0 28 -preset:v:0 veryfast -x265-params:v:0 log-level=error -c:a:0 copy -map_metadata 0 -map_chapters 0 .conform-tmp/conform-e9f07b9c0ad7b80e.mkv
+transcode sample.mkv 346.2MB → 50.1MB (-86%) in 59s
+
+1 files — 0 conformant, 0 remux, 1 transcode
+```
+
+Run `plan` again and you get the point of the whole thing:
+
+```
+~/Projects/conform main
+❯ ./conform plan -config conform.local.yaml
+
+1 files — 1 conformant, 0 remux, 0 transcode
+```
+
+Nothing left to do — and nothing left to do *tomorrow* either, because the
+answer comes from the file's own streams rather than from a record of what was
+done to it.
+
+There is also `probe`, which shows you a file the way conform sees it:
+
+```
+~/Projects/conform main
+❯ ./conform probe media/sample.mkv
+
+{
+  "path": "media/sample.mkv",
+  "size": 52526545,
+  "modTime": "2026-09-10T16:20:37.658426681+01:00",
+  "container": "mkv",
+  "duration": 235.008,
+  "streams": [
+    {
+      "index": 0,
+      "type": "video",
+      "codec": "hevc",
+      "profile": "Main",
+      "language": "eng",
+      "width": 1920,
+      "height": 1080,
+      "default": true
+    },
+    {
+      "index": 1,
+      "type": "audio",
+      "codec": "aac",
+      "profile": "LC",
+      "language": "eng",
+      "channels": 2,
+      "default": true
+    }
+  ]
+}
+```
+
+## Try it
+
+You need Go and ffmpeg. `conform.local.yaml` uses `libx265` and a `./media`
+directory, so it runs on any laptop:
+
+```sh
+go build -o conform ./cmd/conform
+
+./conform probe media/some-file.mkv           # what conform sees
+./conform plan  -config conform.local.yaml    # what it would do
+./conform apply -config conform.local.yaml    # do it
+./conform plan  -config conform.local.yaml    # must now be a no-op
+```
+
+`plan` is always safe. `apply -dry-run` walks the whole apply path without
+writing anything. `-limit 1` tries exactly one file, and `-verbose` shows the
+ffmpeg command lines.
+
+Both commands also take paths:
+
+```sh
+./conform plan  -config conform.local.yaml media/some-file.mkv
+./conform apply -config conform.local.yaml media/some-file.mkv
+```
+
+Tests are `go test ./...`.
+
+## The idea
 
 conform is a reconciler, not a queue.
 
@@ -23,17 +126,21 @@ conform is a reconciler, not a queue.
 | **Observed state** | what `ffprobe` reports about the file |
 | **Action** | whatever closes the gap |
 
-Nothing about a file's history is consulted to decide whether it needs work, so
-`conform plan` is a pure function of the library and the config, and running
-`apply` twice is a no-op. That property is not incidental — it is what lets the
-config be the only source of truth, and it is enforced rather than assumed: the
-runner re-probes and re-plans every output before committing it, and refuses
-anything that does not come back clean.
+Every rule is a predicate on what is **acceptable**, never an instruction to
+act. `codecs: [hevc]` means "hevc is fine as it is" — so the output of a
+transcode satisfies the rule that triggered it, and the second pass leaves it
+alone. A rule phrased as an action would loop forever.
 
-There is no job database because the library *is* the database. A file is
-non-conformant if and only if its own streams say so.
+Nothing about a file's history is consulted, so `conform plan` is a pure
+function of the library and the config, and running `apply` twice is a no-op.
+That is not left to trust: the runner re-probes and re-plans every output
+before committing it, and refuses anything that does not come back clean.
 
-### The two things that do need state
+There is no job database because the library **is** the database. A file needs
+work if and only if its own streams say so.
+
+<details>
+<summary><b>The two things that do need state</b></summary>
 
 A pure reconcile has one failure mode: a file that can never satisfy the
 profile is retried forever. Two cases hit it —
@@ -52,69 +159,18 @@ failure before that — a device that will not open, a volume with no room left
 — is the worker's, and is [a fault](#exit-status) rather than a mark against
 whichever file happened to be in hand.
 
-## Trying it
+</details>
 
-Needs Go and ffmpeg. `conform.local.yaml` uses `libx265` and a `./media`
-directory, so it runs anywhere:
+### Why not Tdarr
 
-```sh
-go build -o conform ./cmd/conform
-
-./conform probe media/some-file.mkv           # what conform sees
-./conform plan  -config conform.local.yaml    # what it would do; touches nothing
-./conform apply -config conform.local.yaml    # do it
-./conform plan  -config conform.local.yaml    # must now be a no-op
-```
-
-`plan` is read-only and always safe. `apply -dry-run` goes through the apply
-path without writing. Add `-limit 1` to try exactly one file, and `-verbose` to
-see the ffmpeg command lines.
-
-Both also take paths, which are judged by whichever library contains them:
-
-```sh
-./conform plan  -config conform.local.yaml media/some-file.mkv
-./conform apply -config conform.local.yaml media/some-file.mkv
-```
-
-The plan is re-derived from the config either way, so a process handed a single
-path reaches the same verdict a full pass would have. That is what the
-orchestrator described under [Distribution](#distribution) will rely on, instead
-of sending a worker a description of the work. Such a worker reads the probe
-cache but never writes it — the cache has one owner, and a hundred of them
-would otherwise be racing over it.
-
-### Exit status
-
-0 whenever conform reached a verdict, **including** "this file cannot be
-processed". That outcome is already recorded as an excuse, and failing the run
-for it as well would have the ledger and a job runner's own retries multiply.
-
-Non-zero is a fault: a bad config, a path no library covers, a directory that
-cannot be read, ffmpeg missing, a hardware encoder that cannot open its device.
-Those are worth retrying; a file that will not encode is not.
-
-The last of those is the one that has to be got right. A worker whose GPU is
-missing fails every file it is given, and an excuse keys on the file — so a
-broken image would quietly spend each file's error budget until the whole
-library was excused for a fault none of it had. Where a profile names a
-hardware encoder, conform therefore creates the device *before* encoding
-anything and exits non-zero if it cannot, and treats ffmpeg's device-setup
-errors as faults if one appears mid-encode. The check runs once per worker.
-
-Run the tests with `go test ./...`.
+Tdarr's flows, plugins and library settings live in its own MongoDB, edited
+through a web UI. The container is declarable; everything that decides what it
+actually *does* is not. That is the whole reason this exists.
 
 ## Config
 
-`conform.local.yaml` is a software-encoder profile that runs anywhere.
-`conform.example.yaml` is the same rules against Intel QuickSync. QuickSync
-needs the oneVPL runtime for Gen11 or newer silicon, which the image ships;
-older Intel parts have no runtime in current Debian and want `hevc_vaapi`,
-which drives the same hardware through the layer underneath.
-
-Every rule is a predicate on what is **acceptable**, never an instruction to
-act. A file satisfying all of them is left alone. Rules left empty impose no
-constraint.
+A profile is a list of predicates. A file satisfying all of them is left alone,
+and a rule left empty imposes no constraint.
 
 ```yaml
 profiles:
@@ -138,21 +194,34 @@ profiles:
       order: [language]
 ```
 
-Options are emitted with a full stream specifier (`-crf:v:0`, not `-crf`), so a
-profile stays correct on a file with more than one video track. Keys are sorted,
-so a given profile always produces byte-identical arguments.
+Two files ship with the repo. `conform.example.yaml` is the profile above,
+against Intel QuickSync; `conform.local.yaml` is the same rules with `libx265`
+instead, so it runs anywhere ffmpeg does.
 
-`execution.tempDir` needs room for one source-sized file per concurrent worker,
-and should not be replicated network storage: a transcode writes a full working
-copy of everything it processes, so a replicated volume multiplies that write by
-its replica count.
+`execution.tempDir` needs room for one source-sized file per concurrent worker.
+Don't point it at replicated network storage — a transcode writes a full
+working copy of everything it processes, and a replicated volume multiplies
+that write by its replica count.
+
+<details>
+<summary><b>QuickSync and older Intel silicon</b></summary>
+
+QuickSync needs the oneVPL runtime for Gen11 or newer silicon, which the image
+ships. Older Intel parts have no runtime in current Debian and want
+`hevc_vaapi`, which drives the same hardware through the layer underneath.
+
+Encoder options are emitted with a full stream specifier (`-crf:v:0`, not
+`-crf`), so a profile stays correct on a file with more than one video track.
+Keys are sorted, so a given profile always produces byte-identical arguments.
+
+</details>
 
 ### The stereo companion
 
 `stereoCompanion` requires a stereo track alongside every surround one in the
-same language, and derives it where it is missing. It is a predicate like the
-rest: a file that already has both is left alone, which is what stops it adding
-a track on every pass.
+same language, and derives it where it is missing. Like every other rule it is
+a predicate: a file that already has both is left alone, which is what stops it
+adding a track on every pass.
 
 The point is the *downmix*, not the extra track. A player folding 5.1 down to
 stereo puts the centre channel — where dialogue sits — well below the music and
@@ -182,27 +251,31 @@ input.
 
 ### Stream order
 
-`order` is a predicate like every other rule: it says what order the kept
-streams of that type are acceptable in, so a file already like that is left
-alone and anything else is remuxed into it — no re-encode. Two keys:
+`order` says what order the kept streams of that type are acceptable in. A file
+already like that is left alone; anything else is remuxed — no re-encode. Two
+keys:
 
-- `language` — the stream's position in that rule's own `languages` list, so
-  the list doubles as a preference order. A language the profile does not list
-  sorts last, which only happens when the filter matched nothing.
-- `channels` — most channels first. Audio only.
-
-Ties keep the file's own order, which is what makes the order total. Without
-that, "is this file already in order?" and "what order would I emit?" could
-disagree and the file would be remuxed on every pass, forever.
-
-Only those two keys, and deliberately so. A key whose value the transcode
-itself changes — `codec`, say — could order the output differently from the
-input that produced it, and the run would reject its own work at
-[verification](#replacing-a-file). `language` survives a copy untouched, and
-`channels` settles after one downmix.
+- **`language`** — the stream's position in that rule's own `languages` list,
+  so the list doubles as a preference order. A language the profile does not
+  list sorts last.
+- **`channels`** — most channels first. Audio only.
 
 Ordering one type never regroups the others: a file that interleaves audio and
 subtitle streams keeps that layout, with only the audio positions rewritten.
+
+<details>
+<summary><b>Why only those two keys</b></summary>
+
+Ties keep the file's own order, which is what makes the order total. Without
+that, "is this file already in order?" and "what order would I emit?" could
+disagree, and the file would be remuxed on every pass, forever.
+
+A key whose value the transcode itself changes — `codec`, say — could order the
+output differently from the input that produced it, and the run would reject
+its own work at [verification](#replacing-a-file). `language` survives a copy
+untouched, and `channels` settles after one downmix.
+
+</details>
 
 ### Choices worth knowing about
 
@@ -219,20 +292,19 @@ subtitle streams keeps that layout, with only the audio positions rewritten.
   everything" fallback is audio-only: a file whose subtitles are all mis-tagged
   loses them, where a file whose audio is mis-tagged does not.
 - **Size is only checked on a re-encode that adds nothing.** A remux can grow
-  from container overhead alone, and a profile that asks for an extra track
-  means the file to grow. The check is there to catch a re-encode that got
-  bigger for nothing, so neither case should trip it.
+  from container overhead alone, and a profile asking for an extra track means
+  the file to grow. The check catches a re-encode that got bigger for nothing.
 
 ## Replacing a file
 
-The original is never opened for writing. conform encodes to `tempDir`, verifies,
-copies the result into the source's *own* directory as a hidden staging file, and
-renames over the original — a rename within one filesystem, which is atomic. The
-temp directory is often a different volume, so renaming straight from it would
-not be.
+The original is never opened for writing. conform encodes to `tempDir`,
+verifies, copies the result into the source's *own* directory as a hidden
+staging file, then renames over the original — a rename within one filesystem,
+which is atomic. The temp directory is often a different volume, so renaming
+straight from it would not be.
 
-A container change writes the new extension and removes the old file afterwards,
-so a crash in between leaves two copies rather than none.
+A container change writes the new extension and removes the old file
+afterwards, so a crash in between leaves two copies rather than none.
 
 Verification is three checks, all of which must pass:
 
@@ -245,16 +317,40 @@ Check 3 is the important one. It is direct proof that the file now conforms,
 and therefore that the next pass will leave it alone. If it fails, the profile
 is unsatisfiable rather than the file being bad, and the message says so.
 
+## Exit status
+
+**0 whenever conform reached a verdict**, including "this file cannot be
+processed". That outcome is already recorded as an excuse, and failing the run
+for it as well would have the ledger and a job runner's own retries multiply.
+
+**Non-zero is a fault**: a bad config, a path no library covers, a directory
+that cannot be read, ffmpeg missing, a hardware encoder that cannot open its
+device. Those are worth retrying; a file that will not encode is not.
+
+<details>
+<summary><b>The hardware-encoder case, which has to be got right</b></summary>
+
+A worker whose GPU is missing fails every file it is given, and an excuse keys
+on the file — so a broken image would quietly spend each file's error budget
+until the whole library was excused for a fault none of it had.
+
+Where a profile names a hardware encoder, conform therefore creates the device
+*before* encoding anything and exits non-zero if it cannot, and treats ffmpeg's
+device-setup errors as faults if one appears mid-encode. The check runs once
+per worker.
+
+</details>
+
 ## Distribution
 
-One transcode is one ffmpeg process and splitting a single file across workers
+One transcode is one ffmpeg process, and splitting a single file across workers
 is rarely worth it, so conform parallelises across files instead.
 
-Rather than ship a scheduler, conform uses Kubernetes as the queue. `conform
-orchestrate` plans the library and creates one Job per non-conformant file; the
-cluster scheduler places it; the Job runs `conform apply <path>`, which
-re-derives the same plan from the same config and exits 0 with its verdict
-recorded.
+Rather than ship a scheduler, conform uses Kubernetes as the queue.
+`conform orchestrate` plans the library and creates one Job per non-conformant
+file; the cluster scheduler places it; the Job runs `conform apply <path>`,
+which re-derives the same plan from the same config and exits 0 with its
+verdict recorded.
 
 ```sh
 conform orchestrate -config /config/conform.yaml -dry-run -verbose  # the Jobs it would create
@@ -264,6 +360,12 @@ conform orchestrate -config /config/conform.yaml -interval 6h       # keep the l
 `-dry-run` creates nothing, but still reads the cluster: a Job *is* the
 profile's PodTemplate with a path appended, so there is nothing to show without
 fetching it.
+
+This is what makes a single-path run matter. The plan is re-derived from the
+config either way, so a worker handed one path reaches the same verdict a full
+pass would have — no description of the work has to travel between them. Such a
+worker reads the probe cache but never writes it; the cache has one owner, and
+a hundred workers would otherwise race over it.
 
 ### Placement is data
 
@@ -302,7 +404,7 @@ cluster holds the queue, and conform holds nothing. Size and mtime are in the
 hash so a replaced file gets a new name instead of colliding with the finished
 Job of its predecessor.
 
-`orchestrator.maxActive` caps the Jobs in flight; whatever is over the cap is
+`orchestrator.maxActive` caps the Jobs in flight. Whatever is over the cap is
 simply not created, and the next pass re-derives it from the library the same
 way it derived this one.
 
