@@ -140,6 +140,56 @@ func TestARealVideoStreamIsStillJudged(t *testing.T) {
 	}
 }
 
+func keeping() config.Profile {
+	p := ordered([]string{config.OrderLanguage}, []string{config.OrderLanguage})
+	p.Audio.Languages = []string{"eng"}
+	p.Subtitles.Languages = []string{"eng"}
+	p.Audio.Unlisted = config.UnlistedKeep
+	p.Subtitles.Unlisted = config.UnlistedKeep
+	return p
+}
+
+func TestUnlistedKeepDropsNothingAndSortsListedFirst(t *testing.T) {
+	f := file("mkv", vid("hevc", 1080),
+		aud("aac", "fre", 2), aud("aac", "eng", 2),
+		sub("subrip", "spa"), sub("subrip", "eng"))
+
+	p := Build(f, keeping())
+	if len(p.Dropped) != 0 {
+		t.Errorf("dropped %v; unlisted keep must drop nothing", p.Dropped)
+	}
+	if got := sources(p, media.Audio); !slices.Equal(got, []int{2, 1}) {
+		t.Errorf("audio order = %v, want eng before fre", got)
+	}
+	if got := sources(p, media.Subtitle); !slices.Equal(got, []int{4, 3}) {
+		t.Errorf("subtitle order = %v, want eng before spa", got)
+	}
+	if p.Action != ActionRemux {
+		t.Errorf("action = %s, want remux", p.Action)
+	}
+}
+
+// A rule that keeps and reorders has to settle, or every pass rewrites the
+// same file forever.
+func TestUnlistedKeepConverges(t *testing.T) {
+	after := file("mkv", vid("hevc", 1080),
+		aud("aac", "eng", 2), aud("aac", "fre", 2),
+		sub("subrip", "eng"), sub("subrip", "spa"))
+
+	if got := Build(after, keeping()).Action; got != ActionNone {
+		t.Errorf("action = %s, want none — this would loop", got)
+	}
+}
+
+func TestUnlistedDefaultsToDropping(t *testing.T) {
+	f := file("mkv", vid("hevc", 1080), aud("aac", "eng", 2), aud("aac", "fre", 2))
+
+	p := Build(f, profile())
+	if len(p.Dropped) != 1 || p.Dropped[0].Source != 2 {
+		t.Errorf("dropped %v, want the unlisted french stream", p.Dropped)
+	}
+}
+
 func TestDownmixSetsChannelCount(t *testing.T) {
 	f := file("mkv", vid("hevc", 1080), aud("aac", "eng", 8))
 	p := Build(f, profile())

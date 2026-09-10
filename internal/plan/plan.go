@@ -202,7 +202,9 @@ func (p *Plan) planAudio(streams []media.Stream, rules config.AudioRules) {
 	keep := make([]bool, len(streams))
 	kept := 0
 	for i, s := range streams {
-		keep[i] = len(rules.Languages) == 0 || slices.Contains(rules.Languages, s.Language)
+		keep[i] = len(rules.Languages) == 0 ||
+			rules.Unlisted == config.UnlistedKeep ||
+			slices.Contains(rules.Languages, s.Language)
 		if keep[i] {
 			kept++
 		}
@@ -286,7 +288,8 @@ func (p *Plan) addCompanions(rules config.AudioRules) {
 func (p *Plan) planSubtitles(streams []media.Stream, rules config.SubtitleRules) {
 	for _, s := range streams {
 		switch {
-		case len(rules.Languages) > 0 && !slices.Contains(rules.Languages, s.Language):
+		case len(rules.Languages) > 0 && rules.Unlisted != config.UnlistedKeep &&
+			!slices.Contains(rules.Languages, s.Language):
 			p.Dropped = append(p.Dropped, Dropped{Source: s.Index, Type: s.Type,
 				Reason: fmt.Sprintf("language %s not kept", s.Language)})
 		case len(rules.Codecs) > 0 && !slices.Contains(rules.Codecs, s.Codec):
@@ -357,8 +360,8 @@ func compare(a, b StreamPlan, keys, langs []string) int {
 	return a.Source - b.Source
 }
 
-// A language the profile does not list sorts last. That only arises when the
-// filter matched nothing and every stream was kept.
+// A language the profile does not list sorts last: under UnlistedKeep that is
+// the whole mechanism, and it also covers a filter that matched nothing.
 func languageRank(lang string, langs []string) int {
 	if i := slices.Index(langs, lang); i >= 0 {
 		return i

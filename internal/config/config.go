@@ -66,7 +66,10 @@ type VideoRules struct {
 
 type AudioRules struct {
 	// Languages to keep. Empty keeps every language.
-	Languages   []string `yaml:"languages"`
+	Languages []string `yaml:"languages"`
+	// What to do with a language Languages does not list: UnlistedDrop, or
+	// UnlistedKeep to demote it in the order instead. Empty means drop.
+	Unlisted    string   `yaml:"unlisted"`
 	Codecs      []string `yaml:"codecs"`
 	MaxChannels int      `yaml:"maxChannels"`
 	Encoder     Encoder  `yaml:"encoder"`
@@ -99,6 +102,7 @@ const DefaultCompanionFilter = "pan=stereo|FL=1.4*FC+0.5*FL+0.5*BL|FR=1.4*FC+0.5
 
 type SubtitleRules struct {
 	Languages []string `yaml:"languages"`
+	Unlisted  string   `yaml:"unlisted"`
 	// Codecs that are acceptable. Anything else is dropped, never converted.
 	Codecs []string `yaml:"codecs"`
 	Order  []string `yaml:"order"`
@@ -114,6 +118,9 @@ type SubtitleRules struct {
 const (
 	OrderLanguage = "language" // position in the rule's own Languages list
 	OrderChannels = "channels" // most channels first; audio only
+
+	UnlistedDrop = "drop"
+	UnlistedKeep = "keep" // kept, and sorted after every listed language
 )
 
 type Encoder struct {
@@ -293,6 +300,12 @@ func (c *Config) Validate() error {
 		if err := validOrder(p.Subtitles.Order, false); err != nil {
 			return fmt.Errorf("profile %q subtitles: %w", l.Profile, err)
 		}
+		if err := validUnlisted(p.Audio.Unlisted); err != nil {
+			return fmt.Errorf("profile %q audio: %w", l.Profile, err)
+		}
+		if err := validUnlisted(p.Subtitles.Unlisted); err != nil {
+			return fmt.Errorf("profile %q subtitles: %w", l.Profile, err)
+		}
 		if p.Container == "" {
 			return fmt.Errorf("profile %q has no container", l.Profile)
 		}
@@ -314,6 +327,14 @@ func (c *Config) Validate() error {
 
 // Profile assumes Validate has run, which guarantees the profile exists.
 func (c *Config) Profile(l Library) Profile { return c.Profiles[l.Profile] }
+
+func validUnlisted(v string) error {
+	switch v {
+	case "", UnlistedDrop, UnlistedKeep:
+		return nil
+	}
+	return fmt.Errorf("unknown unlisted %q, want %q or %q", v, UnlistedDrop, UnlistedKeep)
+}
 
 func validOrder(keys []string, audio bool) error {
 	for _, k := range keys {
