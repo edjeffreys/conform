@@ -23,12 +23,12 @@ import (
 
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
-	LabelLibrary   = "conform.jeffreys.email/library"
-	LabelProfile   = "conform.jeffreys.email/profile"
+	LabelLibrary   = "conform.skaal.io/library"
+	LabelProfile   = "conform.skaal.io/profile"
 	// The path is an annotation, not a label: it exceeds 63 characters and
 	// contains separators no label value may carry.
-	AnnotationPath    = "conform.jeffreys.email/path"
-	AnnotationLibrary = "conform.jeffreys.email/library"
+	AnnotationPath    = "conform.skaal.io/path"
+	AnnotationLibrary = "conform.skaal.io/library"
 
 	ManagedBy = "conform"
 )
