@@ -27,6 +27,11 @@ the property that makes the tool worth using.
   deleting them costs a re-probe, never correctness. Excuses key on size and
   mtime so a replaced file is judged fresh. Anything that would make this state
   authoritative belongs somewhere else.
+- **Only a failure ffmpeg reached the media to produce may spend a file's
+  error budget.** Anything that fails before that — no device, no room, a
+  read-only mount — is a fault: it exits non-zero and is retried. An excuse
+  keys on the file, so a worker's fault recorded against one would excuse a
+  library that was never the problem.
 - **Any UI observes and triggers; it never authors.** Desired state lives in
   git. An editable profile in a web form rebuilds the problem conform exists to
   solve.

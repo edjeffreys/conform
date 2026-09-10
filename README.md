@@ -47,6 +47,11 @@ the file's size and mtime, so replacing the file at a path discards its excuse
 with it — a new download is judged on its own merits, never on its
 predecessor's.
 
+Only an attempt that reached the media can spend a file's error budget. A
+failure before that — a device that will not open, a volume with no room left
+— is the worker's, and is [a fault](#exit-status) rather than a mark against
+whichever file happened to be in hand.
+
 ## Trying it
 
 Needs Go and ffmpeg. `conform.local.yaml` uses `libx265` and a `./media`

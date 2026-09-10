@@ -119,9 +119,16 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 	}
 	res.After = info.Size()
 
+	// Every way this fails is the filesystem's — a full volume, a read-only
+	// mount, an owner conform may not set. Charging that to the file would
+	// excuse a whole library for a condition none of it has, the same way a
+	// missing device once did.
 	final, err := r.replace(tmp, src, p.Container)
 	if err != nil {
-		return r.fail(src, p, res, err.Error()), nil
+		if final != "" {
+			return res, fmt.Errorf("%s was replaced, but %w", filepath.Base(final), err)
+		}
+		return res, fmt.Errorf("cannot commit over %s: %w", filepath.Base(src), err)
 	}
 
 	r.Store.Forget(src)
@@ -208,6 +215,10 @@ func (r *Runner) replace(tmp, src, container string) (string, error) {
 	return final, nil
 }
 
+// The only path that spends a file's error budget, and it has to stay that
+// way: ffmpeg read this file and could not encode it. Anything that fails
+// without reaching the media is the worker's and returns an error, so a
+// broken worker cannot excuse a library it never processed.
 func (r *Runner) fail(src string, p *plan.Plan, res Result, detail string) Result {
 	if err := r.Store.Fail(src, p.File.Size, p.File.ModTime, detail, r.Exec.MaxFailures); err != nil {
 		detail = fmt.Sprintf("%s (and recording the failure failed: %v)", detail, err)
