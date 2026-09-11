@@ -8,7 +8,7 @@ toolchain go1.27.1
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
-	go.yaml.in/yaml/v3 v3.0.4
+	go.yaml.in/yaml/v3 v3.0.5
 	k8s.io/api v0.37.0
 	k8s.io/apimachinery v0.37.0
 	k8s.io/client-go v0.37.0
