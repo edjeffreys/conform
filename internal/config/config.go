@@ -26,6 +26,10 @@ type Library struct {
 	Extensions []string `yaml:"extensions"`
 	// Exclude holds glob patterns matched against the path relative to Path.
 	Exclude []string `yaml:"exclude"`
+	// Watch has a full apply or orchestrate stay running and act on files as
+	// they arrive. Leave it off for a network mount, which delivers no events
+	// for another machine's writes.
+	Watch bool `yaml:"watch"`
 }
 
 // Profile is the desired end state of a file. Every rule is a predicate on

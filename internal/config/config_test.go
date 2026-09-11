@@ -74,13 +74,14 @@ func TestLoadRejects(t *testing.T) {
 }
 
 func TestLoadNewFileTriggers(t *testing.T) {
-	body := valid + "webhook:\n  listen: \":8080\"\n  rewrite:\n    - {from: /tv/, to: /data/TV}\n"
+	body := strings.Replace(valid, "    profile: standard\n", "    profile: standard\n    watch: true\n", 1) +
+		"webhook:\n  listen: \":8080\"\n  rewrite:\n    - {from: /tv/, to: /data/TV}\n"
 	c, err := load(t, body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Webhook.Listen != ":8080" {
-		t.Errorf("webhook = %+v", c.Webhook)
+	if !c.Libraries[0].Watch || c.Webhook.Listen != ":8080" {
+		t.Errorf("watch = %v, webhook = %+v", c.Libraries[0].Watch, c.Webhook)
 	}
 	if want := (Rewrite{From: "/tv", To: "/data/TV"}); len(c.Webhook.Rewrite) != 1 || c.Webhook.Rewrite[0] != want {
 		t.Errorf("rewrite = %+v, want %+v", c.Webhook.Rewrite, want)

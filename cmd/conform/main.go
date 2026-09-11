@@ -27,6 +27,7 @@ import (
 	"github.com/edjeffreys/conform/internal/run"
 	"github.com/edjeffreys/conform/internal/scan"
 	"github.com/edjeffreys/conform/internal/state"
+	"github.com/edjeffreys/conform/internal/watch"
 	"github.com/edjeffreys/conform/internal/webhook"
 
 	"sigs.k8s.io/yaml"
@@ -84,7 +85,7 @@ func usage() {
 
 Named files are judged by the library that contains them. With none given,
 every configured library is walked, and apply or orchestrate then keeps
-running if webhook.listen is set.
+running if any library sets watch or webhook.listen is set.
 
 Flags for plan, apply and orchestrate:
   -config PATH    config file (default conform.yaml)
@@ -222,7 +223,7 @@ func (s *session) consider(ctx context.Context, lib config.Library, prof config.
 	return &item{lib: lib, prof: prof, plan: p}, nil
 }
 
-// changed is nil for a full pass, and otherwise holds the paths posted to it.
+// changed is nil for a full pass, and otherwise holds the paths a watch saw.
 func (s *session) selection(ctx context.Context, includeExcused bool, changed []string) ([]item, *tally, error) {
 	switch {
 	case changed != nil:
@@ -510,8 +511,13 @@ func cmdApply(ctx context.Context, args []string) error {
 	})
 }
 
+// Long enough that a download writing in bursts is not caught between them.
+// Not a setting: the check before commit catches the case this misses.
+const settle = time.Minute
+
 type triggers struct {
-	hook *webhook.Server
+	watch *watch.Watcher
+	hook  *webhook.Server
 }
 
 // A one-off run exits after its pass. That includes a worker Job handed one
@@ -531,6 +537,21 @@ func (s *session) triggers(ctx context.Context, dryRun bool) (*triggers, error) 
 		return ok
 	}
 
+	var roots []string
+	for _, lib := range s.cfg.Libraries {
+		if lib.Watch && (s.library == "" || lib.Name == s.library) {
+			roots = append(roots, lib.Path)
+		}
+	}
+	if len(roots) > 0 {
+		w, err := watch.Start(ctx, roots, settle, covered)
+		if err != nil {
+			return nil, err
+		}
+		tr.watch = w
+		fmt.Printf("watching %s for new files\n", strings.Join(roots, ", "))
+	}
+
 	if s.cfg.Webhook.Listen != "" {
 		h, err := webhook.Start(ctx, s.cfg.Webhook, covered)
 		if err != nil {
@@ -544,6 +565,9 @@ func (s *session) triggers(ctx context.Context, dryRun bool) (*triggers, error) 
 }
 
 func (tr *triggers) close() {
+	if tr.watch != nil {
+		tr.watch.Close()
+	}
 	if tr.hook != nil {
 		tr.hook.Close()
 	}
@@ -553,8 +577,12 @@ func (tr *triggers) close() {
 // arrives during a long pass waits for the next batch rather than being lost.
 func repeat(ctx context.Context, interval time.Duration, tr *triggers, pass func(changed []string) error) error {
 	defer tr.close()
-	var hooked <-chan []string
-	var hookErr <-chan error
+	var watched, hooked <-chan []string
+	var lost <-chan struct{}
+	var watchErr, hookErr <-chan error
+	if tr.watch != nil {
+		watched, lost, watchErr = tr.watch.Changed(), tr.watch.Lost(), tr.watch.Err()
+	}
 	if tr.hook != nil {
 		hooked, hookErr = tr.hook.Changed(), tr.hook.Err()
 	}
@@ -563,7 +591,7 @@ func repeat(ctx context.Context, interval time.Duration, tr *triggers, pass func
 		if err := pass(nil); err != nil {
 			return err
 		}
-		if interval == 0 && tr.hook == nil {
+		if interval == 0 && tr.watch == nil && tr.hook == nil {
 			return nil
 		}
 		var next <-chan time.Time
@@ -578,9 +606,15 @@ func repeat(ctx context.Context, interval time.Duration, tr *triggers, pass func
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
+			case err := <-watchErr:
+				return fmt.Errorf("watch: %w", err)
 			case err := <-hookErr:
 				return fmt.Errorf("webhook: %w", err)
+			case paths = <-watched:
 			case paths = <-hooked:
+			case <-lost:
+				fmt.Println("\nfile events were lost; walking every library")
+				break wait
 			case <-next:
 				break wait
 			}
