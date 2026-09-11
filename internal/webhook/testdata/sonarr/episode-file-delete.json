@@ -1,0 +1,17 @@
+{
+  "series": {"id": 12, "title": "Severance", "path": "/data/TV/Severance", "tvdbId": 371980, "type": "standard", "year": 2022, "tags": []},
+  "episodes": [{"id": 841, "episodeNumber": 3, "seasonNumber": 2, "title": "Who Is Alive?", "seriesId": 12, "tvdbId": 10563471}],
+  "episodeFile": {
+    "id": 5188,
+    "relativePath": "Season 02/Severance - S02E03 - Who Is Alive.mkv",
+    "path": "/data/TV/Severance/Season 02/Severance - S02E03 - Who Is Alive.mkv",
+    "quality": "Bluray-1080p",
+    "qualityVersion": 1,
+    "size": 6120448000,
+    "dateAdded": "2025-06-02T19:40:03Z"
+  },
+  "deleteReason": "manual",
+  "eventType": "EpisodeFileDelete",
+  "instanceName": "Sonarr",
+  "applicationUrl": ""
+}

@@ -1,0 +1,21 @@
+{
+  "series": {"id": 40, "title": "Slow Horses", "path": "/data/TV/Slow Horses", "tvdbId": 399059, "type": "standard", "year": 2022, "tags": []},
+  "episodes": [
+    {"id": 2001, "episodeNumber": 1, "seasonNumber": 4, "title": "Identity Theft", "seriesId": 40, "tvdbId": 10418501},
+    {"id": 2002, "episodeNumber": 2, "seasonNumber": 4, "title": "Hall of Mirrors", "seriesId": 40, "tvdbId": 10418502}
+  ],
+  "episodeFiles": [
+    {"id": 7001, "relativePath": "Season 04/Slow Horses - S04E01 - Identity Theft.mkv", "path": "/data/TV/Slow Horses/Season 04/Slow Horses - S04E01 - Identity Theft.mkv", "quality": "WEBDL-1080p", "qualityVersion": 1, "size": 2211000000, "dateAdded": "2024-09-04T06:00:00Z", "languages": [{"id": 1, "name": "English"}]},
+    {"id": 7002, "relativePath": "Season 04/Slow Horses - S04E02 - Hall of Mirrors.mkv", "path": "/data/TV/Slow Horses/Season 04/Slow Horses - S04E02 - Hall of Mirrors.mkv", "quality": "WEBDL-1080p", "qualityVersion": 1, "size": 2198000000, "dateAdded": "2024-09-04T06:00:01Z", "languages": [{"id": 1, "name": "English"}]}
+  ],
+  "downloadClient": "SABnzbd",
+  "downloadClientType": "SABnzbd",
+  "downloadId": "SABnzbd_nzo_abc123",
+  "release": {"releaseTitle": "Slow.Horses.S04.1080p.ATVP.WEB-DL.DDP5.1.H.264", "indexer": "Example Indexer", "size": 4409000000, "releaseType": "seasonPack"},
+  "fileCount": 2,
+  "sourcePath": "/data/downloads/tv/Slow.Horses.S04.1080p.ATVP.WEB-DL.DDP5.1.H.264",
+  "destinationPath": "/data/TV/Slow Horses/Season 04",
+  "eventType": "Download",
+  "instanceName": "Sonarr",
+  "applicationUrl": ""
+}

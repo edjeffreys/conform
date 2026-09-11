@@ -1,0 +1,16 @@
+{
+  "movie": {"id": 310, "title": "Dune: Part Two", "year": 2024, "folderPath": "/data/Movies/Dune Part Two (2024)", "tmdbId": 693134, "tags": []},
+  "movieFile": {
+    "id": 955,
+    "relativePath": "Dune Part Two (2024) Remux-1080p.mkv",
+    "path": "/data/Movies/Dune Part Two (2024)/Dune Part Two (2024) Remux-1080p.mkv",
+    "quality": "Remux-1080p",
+    "qualityVersion": 1,
+    "size": 32100000000,
+    "dateAdded": "2024-07-01T10:00:00Z"
+  },
+  "deleteReason": "manual",
+  "eventType": "MovieFileDelete",
+  "instanceName": "Radarr",
+  "applicationUrl": ""
+}
