@@ -341,6 +341,69 @@ per worker.
 
 </details>
 
+## New files
+
+A pass finds everything eventually. A webhook has conform pick up a new file as
+soon as another service reports it instead, and keeps a full `apply` or
+`orchestrate` running after its first pass:
+
+```yaml
+webhook:
+  listen: ":8080"        # accept new files' paths from other services
+```
+
+conform only learns *where to look*. The file is judged exactly as a
+full pass would judge it, so one that already conforms is left alone.
+
+A run given file paths, `-limit` or `-dry-run` still exits after one pass. That
+matters for a [worker Job](#distribution): it reads the same config, and would
+otherwise never finish.
+
+Passes run one at a time. A file that arrives during a long pass waits for it
+to finish rather than being lost.
+
+### Webhooks
+
+Anything that knows when a file is finished can tell conform about it — a
+download client's on-completion hook, a script, cron:
+
+```sh
+curl -X POST http://conform:8080/webhook \
+  -d '{"paths": ["/data/TV/Show/Season 1/Show - S01E01.mkv"]}'
+```
+
+conform answers `202` once the paths are queued and acts on them straight away.
+A path no library covers is refused with `422`, and the whole request with it,
+so a mistake shows up at the sender instead of vanishing.
+
+Services that send their own payload rather than a list of paths get a route
+that translates it:
+
+| service | URL | tick |
+|---|---|---|
+| Sonarr | `http://conform:8080/webhook/sonarr` | On File Import, On File Upgrade |
+| Radarr | `http://conform:8080/webhook/radarr` | On File Import, On File Upgrade |
+
+Add each under **Settings → Connect → Webhook**; **Test** should succeed. Any
+other event they send is answered `200` and ignored, so ticking more triggers is
+harmless. Another service is one mapper and a handful of its real payloads — see
+[`internal/webhook`](internal/webhook/README.md).
+
+When a service sees the library at a different path than conform does, rewrite
+the prefix. The longest matching `from` wins, and it only matches whole path
+components:
+
+```yaml
+webhook:
+  listen: ":8080"
+  rewrite:
+    - from: /tv        # as Sonarr sees it
+      to: /data/TV     # as conform sees it
+```
+
+There is no authentication yet. Keep the port on a network only your media stack
+can reach — a cluster Service rather than an Ingress.
+
 ## Distribution
 
 One transcode is one ffmpeg process, and splitting a single file across workers
