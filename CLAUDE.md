@@ -80,6 +80,8 @@ internal/
   run/           executing one plan: encode, verify, replace
   scan/          walking a library
   state/         probe cache and excuse records
+  watch/         filesystem events, settled into paths worth re-judging
+  webhook/       paths posted by other services; translators for their payloads
 ```
 
 ## Testing
@@ -88,6 +90,10 @@ internal/
 only where it does not. Prefer growing the table tests in `plan/plan_test.go` —
 the planner is where correctness actually lives, and it is pure, so it is cheap
 to test exhaustively.
+
+A webhook mapper is held to its contract by real payloads under
+`internal/webhook/testdata/<name>/`, not by hand-written cases; its
+[README](internal/webhook/README.md) says what a new one needs.
 
 `orchestrate` keeps the cluster behind a `Kube` interface, so building a Job is
 tested without one. Keep it that way: everything that decides what a Job says

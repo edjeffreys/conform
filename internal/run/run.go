@@ -119,6 +119,14 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (
 	}
 	res.After = info.Size()
 
+	// Not an excuse either: a download still being written has a new size and
+	// mtime by now, and the next pass judges it fresh.
+	if detail, ok := unchanged(p.File); !ok {
+		res.Outcome = OutcomeFailed
+		res.Detail = detail
+		return res, nil
+	}
+
 	// Every way this fails is the filesystem's — a full volume, a read-only
 	// mount, an owner conform may not set. Charging that to the file would
 	// excuse a whole library for a condition none of it has, the same way a
@@ -270,6 +278,17 @@ func destinationFree(src, container string) (string, bool) {
 	default:
 		return err.Error(), false
 	}
+}
+
+func unchanged(f *media.File) (string, bool) {
+	info, err := os.Stat(f.Path)
+	if err != nil {
+		return fmt.Sprintf("source is no longer readable: %v", err), false
+	}
+	if info.Size() != f.Size || !info.ModTime().Equal(f.ModTime) {
+		return "source changed during the encode, so the output is of a file that no longer exists", false
+	}
+	return "", true
 }
 
 func pathHash(src string) string {

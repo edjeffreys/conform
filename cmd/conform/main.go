@@ -27,6 +27,8 @@ import (
 	"github.com/edjeffreys/conform/internal/run"
 	"github.com/edjeffreys/conform/internal/scan"
 	"github.com/edjeffreys/conform/internal/state"
+	"github.com/edjeffreys/conform/internal/watch"
+	"github.com/edjeffreys/conform/internal/webhook"
 
 	"sigs.k8s.io/yaml"
 )
@@ -82,7 +84,8 @@ func usage() {
   conform orchestrate [flags]   create one Kubernetes Job per file needing work
 
 Named files are judged by the library that contains them. With none given,
-every configured library is walked.
+every configured library is walked, and apply or orchestrate then keeps
+running if any library sets watch or webhook.listen is set.
 
 Flags for plan, apply and orchestrate:
   -config PATH    config file (default conform.yaml)
@@ -220,8 +223,12 @@ func (s *session) consider(ctx context.Context, lib config.Library, prof config.
 	return &item{lib: lib, prof: prof, plan: p}, nil
 }
 
-func (s *session) selection(ctx context.Context, includeExcused bool) ([]item, *tally, error) {
-	if len(s.paths) > 0 {
+// changed is nil for a full pass, and otherwise holds the paths a watch saw.
+func (s *session) selection(ctx context.Context, includeExcused bool, changed []string) ([]item, *tally, error) {
+	switch {
+	case changed != nil:
+		return s.collectChanged(ctx, changed, includeExcused)
+	case len(s.paths) > 0:
 		return s.collectFiles(ctx, includeExcused)
 	}
 	return s.collect(ctx, includeExcused)
@@ -267,6 +274,65 @@ func (s *session) collectFiles(ctx context.Context, includeExcused bool) ([]item
 		}
 	}
 	return items, t, nil
+}
+
+// Unlike a named file, a changed path failing to be judged is no fault: it may
+// be gone again, or half a download whose next write names it again.
+func (s *session) collectChanged(ctx context.Context, paths []string, includeExcused bool) ([]item, *tally, error) {
+	var items []item
+	t := &tally{}
+
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		lib, path, ok := s.covering(path)
+		if !ok {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		t.total++
+
+		it, err := s.consider(ctx, lib, s.cfg.Profile(lib), path, info, includeExcused, t)
+		if err != nil {
+			t.unreadable++
+			fmt.Fprintf(os.Stderr, "  ! %s: %v\n", rel(lib, path), err)
+			continue
+		}
+		if it != nil {
+			items = append(items, *it)
+		}
+	}
+	if s.ownsCache {
+		return items, t, s.store.Save()
+	}
+	return items, t, nil
+}
+
+// The path comes back in the form a full pass gives it, joined onto the
+// library's own path, because the cache and excuses key on the string.
+func (s *session) covering(path string) (config.Library, string, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return config.Library{}, "", false
+	}
+	lib, ok := s.libraryFor(abs)
+	if !ok || (s.library != "" && lib.Name != s.library) {
+		return config.Library{}, "", false
+	}
+	root, err := filepath.Abs(lib.Path)
+	if err != nil {
+		return config.Library{}, "", false
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return config.Library{}, "", false
+	}
+	path = filepath.Join(lib.Path, rel)
+	return lib, path, scan.Includes(lib, path)
 }
 
 // The most specific library wins, so one nested inside another's tree still
@@ -355,7 +421,7 @@ func cmdPlan(ctx context.Context, args []string) error {
 		return err
 	}
 
-	items, t, err := s.selection(ctx, *showExcused)
+	items, t, err := s.selection(ctx, *showExcused, nil)
 	if err != nil {
 		return err
 	}
@@ -436,22 +502,125 @@ func cmdApply(ctx context.Context, args []string) error {
 	}
 	s.ffmpegOut = *ffmpegOut
 
-	return repeat(ctx, *interval, func() error { return s.pass(ctx, *dryRun, *retryExcused) })
+	tr, err := s.triggers(ctx, *dryRun)
+	if err != nil {
+		return err
+	}
+	return repeat(ctx, *interval, tr, func(changed []string) error {
+		return s.pass(ctx, *dryRun, *retryExcused, changed)
+	})
 }
 
-func repeat(ctx context.Context, interval time.Duration, pass func() error) error {
+// Long enough that a download writing in bursts is not caught between them.
+// Not a setting: the check before commit catches the case this misses.
+const settle = time.Minute
+
+type triggers struct {
+	watch *watch.Watcher
+	hook  *webhook.Server
+}
+
+// A one-off run exits after its pass. That includes a worker Job handed one
+// path, which reads the same config and would otherwise never finish.
+func (s *session) oneOff(dryRun bool) bool {
+	return dryRun || len(s.paths) > 0 || s.limit != 0
+}
+
+// Started before the first pass, so a file arriving during it is not missed.
+func (s *session) triggers(ctx context.Context, dryRun bool) (*triggers, error) {
+	tr := &triggers{}
+	if s.oneOff(dryRun) {
+		return tr, nil
+	}
+	covered := func(path string) bool {
+		_, _, ok := s.covering(path)
+		return ok
+	}
+
+	var roots []string
+	for _, lib := range s.cfg.Libraries {
+		if lib.Watch && (s.library == "" || lib.Name == s.library) {
+			roots = append(roots, lib.Path)
+		}
+	}
+	if len(roots) > 0 {
+		w, err := watch.Start(ctx, roots, settle, covered)
+		if err != nil {
+			return nil, err
+		}
+		tr.watch = w
+		fmt.Printf("watching %s for new files\n", strings.Join(roots, ", "))
+	}
+
+	if s.cfg.Webhook.Listen != "" {
+		h, err := webhook.Start(ctx, s.cfg.Webhook, covered)
+		if err != nil {
+			tr.close()
+			return nil, err
+		}
+		tr.hook = h
+		fmt.Printf("listening for webhooks on %s: %s\n", h.Addr(), strings.Join(webhook.Routes(), ", "))
+	}
+	return tr, nil
+}
+
+func (tr *triggers) close() {
+	if tr.watch != nil {
+		tr.watch.Close()
+	}
+	if tr.hook != nil {
+		tr.hook.Close()
+	}
+}
+
+// One pass runs at a time, so no file is ever in two at once. A change that
+// arrives during a long pass waits for the next batch rather than being lost.
+func repeat(ctx context.Context, interval time.Duration, tr *triggers, pass func(changed []string) error) error {
+	defer tr.close()
+	var watched, hooked <-chan []string
+	var lost <-chan struct{}
+	var watchErr, hookErr <-chan error
+	if tr.watch != nil {
+		watched, lost, watchErr = tr.watch.Changed(), tr.watch.Lost(), tr.watch.Err()
+	}
+	if tr.hook != nil {
+		hooked, hookErr = tr.hook.Changed(), tr.hook.Err()
+	}
+
 	for {
-		if err := pass(); err != nil {
+		if err := pass(nil); err != nil {
 			return err
 		}
-		if interval == 0 {
+		if interval == 0 && tr.watch == nil && tr.hook == nil {
 			return nil
 		}
-		fmt.Printf("\nnext pass in %s\n", interval)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
+		var next <-chan time.Time
+		if interval > 0 {
+			fmt.Printf("\nnext pass in %s\n", interval)
+			next = time.After(interval)
+		}
+
+	wait:
+		for {
+			var paths []string
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case err := <-watchErr:
+				return fmt.Errorf("watch: %w", err)
+			case err := <-hookErr:
+				return fmt.Errorf("webhook: %w", err)
+			case paths = <-watched:
+			case paths = <-hooked:
+			case <-lost:
+				fmt.Println("\nfile events were lost; walking every library")
+				break wait
+			case <-next:
+				break wait
+			}
+			if err := pass(paths); err != nil {
+				return err
+			}
 		}
 	}
 }
@@ -480,12 +649,16 @@ func cmdOrchestrate(ctx context.Context, args []string) error {
 		return err
 	}
 	o := &orchestrate.Orchestrator{Kube: kube, Opts: s.cfg.Orchestrator, DryRun: *dryRun}
-	return repeat(ctx, *interval, func() error { return s.dispatch(ctx, o) })
+	tr, err := s.triggers(ctx, *dryRun)
+	if err != nil {
+		return err
+	}
+	return repeat(ctx, *interval, tr, func(changed []string) error { return s.dispatch(ctx, o, changed) })
 }
 
-func (s *session) dispatch(ctx context.Context, o *orchestrate.Orchestrator) error {
-	items, t, err := s.selection(ctx, false)
-	if err != nil {
+func (s *session) dispatch(ctx context.Context, o *orchestrate.Orchestrator, changed []string) error {
+	items, t, err := s.selection(ctx, false, changed)
+	if err != nil || quiet(changed, items, t) {
 		return err
 	}
 
@@ -525,9 +698,15 @@ func (s *session) dispatch(ctx context.Context, o *orchestrate.Orchestrator) err
 	return nil
 }
 
-func (s *session) pass(ctx context.Context, dryRun, retryExcused bool) error {
-	items, t, err := s.selection(ctx, retryExcused)
-	if err != nil {
+// Every replaced file raises an event and comes back conformant, so a batch
+// with nothing to report says nothing rather than confirming that each time.
+func quiet(changed []string, items []item, t *tally) bool {
+	return changed != nil && len(items) == 0 && t.unreadable == 0
+}
+
+func (s *session) pass(ctx context.Context, dryRun, retryExcused bool, changed []string) error {
+	items, t, err := s.selection(ctx, retryExcused, changed)
+	if err != nil || quiet(changed, items, t) {
 		return err
 	}
 	if dryRun {

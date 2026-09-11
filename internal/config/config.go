@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -15,6 +16,7 @@ type Config struct {
 	Profiles     map[string]Profile `yaml:"profiles"`
 	Execution    Execution          `yaml:"execution"`
 	Orchestrator Orchestrator       `yaml:"orchestrator"`
+	Webhook      Webhook            `yaml:"webhook"`
 }
 
 type Library struct {
@@ -24,6 +26,10 @@ type Library struct {
 	Extensions []string `yaml:"extensions"`
 	// Exclude holds glob patterns matched against the path relative to Path.
 	Exclude []string `yaml:"exclude"`
+	// Watch has a full apply or orchestrate stay running and act on files as
+	// they arrive. Leave it off for a network mount, which delivers no events
+	// for another machine's writes.
+	Watch bool `yaml:"watch"`
 }
 
 // Profile is the desired end state of a file. Every rule is a predicate on
@@ -170,6 +176,20 @@ type Orchestrator struct {
 	BackoffLimit            *int32 `yaml:"backoffLimit"`
 }
 
+// Webhook receives the paths of new files from other services. An empty
+// Listen serves nothing.
+type Webhook struct {
+	Listen  string    `yaml:"listen"`
+	Rewrite []Rewrite `yaml:"rewrite"`
+}
+
+// Rewrite maps a path prefix as a sender sees it onto the same place as
+// conform sees it, for a service that mounts the library somewhere else.
+type Rewrite struct {
+	From string `yaml:"from"`
+	To   string `yaml:"to"`
+}
+
 var DefaultExtensions = []string{".mkv", ".mp4", ".avi", ".m4v", ".mov", ".wmv", ".ts", ".mpg", ".mpeg"}
 
 func Load(path string) (*Config, error) {
@@ -239,6 +259,15 @@ func (c *Config) applyDefaults() {
 				c.Libraries[i].Extensions[j] = "." + ext
 			}
 			c.Libraries[i].Extensions[j] = strings.ToLower(c.Libraries[i].Extensions[j])
+		}
+	}
+
+	for i, r := range c.Webhook.Rewrite {
+		if r.From != "" {
+			c.Webhook.Rewrite[i].From = filepath.Clean(r.From)
+		}
+		if r.To != "" {
+			c.Webhook.Rewrite[i].To = filepath.Clean(r.To)
 		}
 	}
 
@@ -321,6 +350,17 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("profile %q constrains audio but sets no audio encoder", l.Profile)
 			}
 		}
+	}
+
+	from := map[string]bool{}
+	for _, r := range c.Webhook.Rewrite {
+		switch {
+		case r.From == "" || r.To == "":
+			return fmt.Errorf("webhook rewrite needs both from and to, got from %q to %q", r.From, r.To)
+		case from[r.From]:
+			return fmt.Errorf("webhook rewrite from %q is given twice", r.From)
+		}
+		from[r.From] = true
 	}
 	return nil
 }

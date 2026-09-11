@@ -10,6 +10,9 @@ libraries:
     profile: standard
     exclude:
       - "*/Season 00/*"
+    # Act on files as they appear. Leave off for an NFS or SMB mount, which
+    # delivers no events for writes made elsewhere — the webhook covers those.
+    # watch: true
 
 profiles:
   standard:
@@ -103,3 +106,13 @@ orchestrator:
   # Retries are for infrastructure faults. A file that cannot be encoded exits
   # 0 and is owned by the excuse ledger, so the two never multiply.
   backoffLimit: 2
+
+# Other services post new files here, and conform acts on them at once:
+# POST /webhook with {"paths": [...]}, or point Sonarr and Radarr's Connect →
+# Webhook at /webhook/sonarr and /webhook/radarr. rewrite maps a prefix as a
+# service sees the library onto where conform sees it.
+# webhook:
+#   listen: ":8080"
+#   rewrite:
+#     - from: /tv
+#       to: /data/TV

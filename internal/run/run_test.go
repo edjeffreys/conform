@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/edjeffreys/conform/internal/media"
 )
 
 func write(t *testing.T, path, content string) {
@@ -191,5 +193,29 @@ func TestDestinationFree(t *testing.T) {
 func TestPathHashDistinguishesExtensions(t *testing.T) {
 	if pathHash("/media/Film.mkv") == pathHash("/media/Film.mp4") {
 		t.Error("paths differing only by extension hash alike")
+	}
+}
+
+func TestUnchangedCatchesASourceWrittenDuringTheEncode(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "Film.mkv")
+	write(t, src, "first chunk")
+	info, err := os.Stat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &media.File{Path: src, Size: info.Size(), ModTime: info.ModTime()}
+
+	if detail, ok := unchanged(f); !ok {
+		t.Fatalf("an untouched source reads as changed: %s", detail)
+	}
+
+	write(t, src, "first chunk, second chunk")
+	if _, ok := unchanged(f); ok {
+		t.Error("a source that grew reads as unchanged")
+	}
+
+	os.Remove(src)
+	if _, ok := unchanged(f); ok {
+		t.Error("a source that is gone reads as unchanged")
 	}
 }

@@ -60,6 +60,9 @@ func TestLoadRejects(t *testing.T) {
 		"unknown order key": valid + "    audio:\n      order: [bitrate]\n",
 		// Subtitle streams have no channel count to order by.
 		"channels on subtitles": valid + "    subtitles:\n      order: [channels]\n",
+		"rewrite with no to":    valid + "webhook:\n  rewrite:\n    - from: /tv\n",
+		// Two targets for one prefix leave which applies to map order.
+		"rewrite given twice": valid + "webhook:\n  rewrite:\n    - {from: /tv, to: /data/TV}\n    - {from: /tv/, to: /media/TV}\n",
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -67,5 +70,20 @@ func TestLoadRejects(t *testing.T) {
 				t.Error("expected an error, got none")
 			}
 		})
+	}
+}
+
+func TestLoadNewFileTriggers(t *testing.T) {
+	body := strings.Replace(valid, "    profile: standard\n", "    profile: standard\n    watch: true\n", 1) +
+		"webhook:\n  listen: \":8080\"\n  rewrite:\n    - {from: /tv/, to: /data/TV}\n"
+	c, err := load(t, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Libraries[0].Watch || c.Webhook.Listen != ":8080" {
+		t.Errorf("watch = %v, webhook = %+v", c.Libraries[0].Watch, c.Webhook)
+	}
+	if want := (Rewrite{From: "/tv", To: "/data/TV"}); len(c.Webhook.Rewrite) != 1 || c.Webhook.Rewrite[0] != want {
+		t.Errorf("rewrite = %+v, want %+v", c.Webhook.Rewrite, want)
 	}
 }
