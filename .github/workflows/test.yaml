@@ -33,6 +33,9 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
+      # Unpinned on purpose: the vulnerability database is live, so pinning buys no reproducibility.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
       # Nothing else here runs Python, so a broken hook would only surface as a
       # failing tool call mid-session.
       - name: Check hooks parse
