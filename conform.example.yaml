@@ -24,16 +24,13 @@ profiles:
       # pass re-encoding the output of the first.
       codecs: [hevc]
       maxHeight: 1080
-      # scale_qsv rather than scale: with -hwaccel qsv the frames live in GPU
-      # memory, and the software filter would force a download and re-upload
-      # around every scale.
-      scaleFilter: "scale_qsv=h={height}:w=-1"
+      # A preset: the worker tries QuickSync, then VAAPI on the same silicon,
+      # then software, and logs which it landed on. Name an encoder instead
+      # (name, options, inputArgs, and scaleFilter above) to set it by hand.
       encoder:
-        name: hevc_qsv
-        inputArgs: ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
-        options:
-          global_quality: "24"
-          preset: "medium"
+        codec: hevc
+        accel: [qsv, vaapi, software]
+        quality: balanced
 
     audio:
       languages: [eng, und]

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/edjeffreys/conform/internal/config"
+	"github.com/edjeffreys/conform/internal/encoder"
 	"github.com/edjeffreys/conform/internal/media"
 	"github.com/edjeffreys/conform/internal/orchestrate"
 	"github.com/edjeffreys/conform/internal/plan"
@@ -440,7 +441,11 @@ func cmdPlan(ctx context.Context, args []string) error {
 	}
 	for _, it := range items {
 		describe(it)
-		if *verbose {
+		switch {
+		case !*verbose:
+		case it.plan.Unresolved():
+			fmt.Println("          $ (no command yet: the worker that runs it chooses the encoder)")
+		default:
 			fmt.Printf("          $ %s %v\n", s.cfg.Execution.FFmpeg, it.plan.FFmpegArgs(it.plan.File.Path, "OUTPUT"+media.Ext(it.plan.Container)))
 		}
 	}
@@ -459,21 +464,28 @@ func describe(it item) {
 	for _, d := range it.plan.Dropped {
 		fmt.Printf("          − drop %s stream %d (%s)\n", d.Type, d.Source, d.Reason)
 	}
-	if enc := encodes(it.plan); enc != "" {
+	if enc := encodes(it.plan, it.prof.Video.Encoder.Accel); enc != "" {
 		fmt.Printf("          → %s\n", enc)
 	}
 }
 
 // A software fallback on a node picked for its device is both far slower and a
 // sign the placement is wrong, so the video encoder says which it is.
-func encodes(p *plan.Plan) string {
+func encodes(p *plan.Plan, accel []string) string {
 	var out []string
 	for _, s := range p.Streams {
 		if s.Codec == plan.Copy {
 			continue
 		}
 		what := fmt.Sprintf("%s %s", s.Type, s.Codec)
-		if s.Type == media.Video {
+		if s.Preset != "" && s.Codec == "" {
+			if len(accel) == 0 {
+				for _, a := range encoder.Order {
+					accel = append(accel, string(a))
+				}
+			}
+			what = fmt.Sprintf("%s %s (first that works of %s)", s.Type, s.Preset, strings.Join(accel, ", "))
+		} else if s.Type == media.Video {
 			hw := hwaccel(p.InputArgs)
 			if hw == "" {
 				// An encoder can drive a device without a hardware decode
@@ -749,6 +761,11 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool, changed [
 	work := make(chan item)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	runner.Notef = func(f string, a ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Printf(f+"\n", a...)
+	}
 	var failures int
 	var fatal error
 
@@ -826,7 +843,11 @@ func report(it item, res run.Result) {
 			saved = fmt.Sprintf(" %s → %s (%+.0f%%)", human(res.Before), human(res.After),
 				(float64(res.After)/float64(res.Before)-1)*100)
 		}
-		fmt.Printf("%-9s %s%s in %s\n", res.Action, name, saved, res.Duration.Round(time.Second))
+		with := ""
+		if res.Encoder != "" {
+			with = " with " + res.Encoder
+		}
+		fmt.Printf("%-9s %s%s in %s%s\n", res.Action, name, saved, res.Duration.Round(time.Second), with)
 	case run.OutcomeExcused:
 		fmt.Printf("%-9s %s — %s\n", "excused", name, res.Detail)
 	case run.OutcomeFailed:

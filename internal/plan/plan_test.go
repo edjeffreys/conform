@@ -642,3 +642,46 @@ func TestCopyOnlyConverges(t *testing.T) {
 		t.Fatalf("the remux still needs work (%s) — the fallback would reject its own output", got)
 	}
 }
+
+func withPreset(p config.Profile) config.Profile {
+	p.Video.Encoder = config.Encoder{Codec: "hevc"}
+	p.Video.ScaleFilter = ""
+	return p
+}
+
+// The orchestrator plans without a GPU and the worker with one; they must
+// still agree on what to do and which template to place it on.
+func TestPresetDecidesLikeTheEncoderItResolvesTo(t *testing.T) {
+	f := file("mp4", vid("h264", 2160), aud("aac", "eng", 2), aud("aac", "fre", 2))
+	preset := Build(f, withPreset(profile()))
+	named := Build(f, profile())
+
+	if preset.Action != named.Action || preset.EncodesVideo() != named.EncodesVideo() || len(preset.Dropped) != len(named.Dropped) {
+		t.Errorf("preset plans %s, named encoder plans %s", preset, named)
+	}
+	if !preset.Unresolved() || named.Unresolved() {
+		t.Errorf("Unresolved = %v for the preset, %v for the named encoder", preset.Unresolved(), named.Unresolved())
+	}
+	if kind, _ := preset.HWDevice(); kind != "" {
+		t.Errorf("an unresolved preset claims device %q", kind)
+	}
+	if Build(f, CopyOnly(withPreset(profile()))).Unresolved() {
+		t.Error("a copy-only plan has nothing to resolve")
+	}
+}
+
+// A resolved hardware preset uploads every frame, scaled or not.
+func TestEncoderFilterRunsBeforeTheScale(t *testing.T) {
+	prof := profile()
+	prof.Video.Encoder.Filter = "format=nv12|vaapi,hwupload"
+	prof.Video.ScaleFilter = "scale_vaapi=w={width}:h={height}"
+
+	tall := Build(file("mkv", vid("h264", 2160)), prof).Streams[0].Filter
+	if tall != "format=nv12|vaapi,hwupload,scale_vaapi=w=-2:h=1080" {
+		t.Errorf("downscale filter = %q", tall)
+	}
+	short := Build(file("mkv", vid("h264", 1080)), prof).Streams[0].Filter
+	if short != "format=nv12|vaapi,hwupload" {
+		t.Errorf("filter without a scale = %q", short)
+	}
+}

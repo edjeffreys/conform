@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/edjeffreys/conform/internal/encoder"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -136,6 +139,16 @@ type Encoder struct {
 	Options map[string]string `yaml:"options"`
 	// InputArgs are placed before -i, for hardware decode setup.
 	InputArgs []string `yaml:"inputArgs"`
+
+	// Codec is a preset in place of Name: the worker that encodes picks the
+	// first of Accel whose encoder for it actually works on its own hardware.
+	Codec   string   `yaml:"codec"`
+	Accel   []string `yaml:"accel"`
+	Quality string   `yaml:"quality"`
+
+	// Set only by resolving a preset, which has to upload whatever the GPU
+	// could not decode whether or not the frame is scaled.
+	Filter string `yaml:"-"`
 }
 
 type Execution struct {
@@ -283,11 +296,12 @@ func (c *Config) applyDefaults() {
 				sc.Title = "Stereo"
 			}
 		}
-		if p.Video.ScaleFilter == "" {
+		if p.Video.ScaleFilter == "" && p.Video.Encoder.Codec == "" {
 			p.Video.ScaleFilter = "scale=-2:{height}"
 		}
 		p.Container = strings.ToLower(p.Container)
 		p.Video.Codecs = lowerAll(p.Video.Codecs)
+		p.Video.Encoder.Codec = strings.ToLower(p.Video.Encoder.Codec)
 		p.Audio.Codecs = lowerAll(p.Audio.Codecs)
 		p.Audio.Languages = lowerAll(p.Audio.Languages)
 		p.Subtitles.Codecs = lowerAll(p.Subtitles.Codecs)
@@ -341,13 +355,24 @@ func (c *Config) Validate() error {
 		// A profile that can reject a stream but not re-encode it would plan a
 		// transcode it cannot emit.
 		if len(p.Video.Codecs) > 0 || p.Video.MaxHeight > 0 {
-			if p.Video.Encoder.Name == "" {
+			if p.Video.Encoder.Name == "" && p.Video.Encoder.Codec == "" {
 				return fmt.Errorf("profile %q constrains video but sets no video encoder", l.Profile)
 			}
 		}
 		if len(p.Audio.Codecs) > 0 || p.Audio.MaxChannels > 0 {
 			if p.Audio.Encoder.Name == "" {
 				return fmt.Errorf("profile %q constrains audio but sets no audio encoder", l.Profile)
+			}
+		}
+		if err := validVideoEncoder(p.Video); err != nil {
+			return fmt.Errorf("profile %q video: %w", l.Profile, err)
+		}
+		if err := validEncoder(p.Audio.Encoder, p.Audio.Codecs); err != nil {
+			return fmt.Errorf("profile %q audio: %w", l.Profile, err)
+		}
+		if sc := p.Audio.StereoCompanion; sc != nil {
+			if err := validEncoder(sc.Encoder, p.Audio.Codecs); err != nil {
+				return fmt.Errorf("profile %q stereoCompanion: %w", l.Profile, err)
 			}
 		}
 	}
@@ -363,6 +388,66 @@ func (c *Config) Validate() error {
 		from[r.From] = true
 	}
 	return nil
+}
+
+// An encoder writing a codec its own rules reject would re-encode every file,
+// and have every output refused as not conforming.
+func validEncoder(e Encoder, codecs []string) error {
+	if e.Codec != "" || len(e.Accel) > 0 || e.Quality != "" {
+		return fmt.Errorf("codec, accel and quality are video presets; name an encoder here")
+	}
+	return producesAcceptable(e.Name, codecs)
+}
+
+func validVideoEncoder(v VideoRules) error {
+	e := v.Encoder
+	if e.Codec == "" {
+		if len(e.Accel) > 0 || e.Quality != "" {
+			return fmt.Errorf("accel and quality apply to a codec preset, not to encoder %q", e.Name)
+		}
+		return producesAcceptable(e.Name, v.Codecs)
+	}
+
+	switch {
+	case e.Name != "":
+		return fmt.Errorf("encoder sets both name %q and codec %q; a preset picks the encoder itself", e.Name, e.Codec)
+	case len(e.InputArgs) > 0 || v.ScaleFilter != "":
+		return fmt.Errorf("codec preset %q sets its own inputArgs and scaleFilter; name an encoder to set them", e.Codec)
+	case !encoder.HasPreset(e.Codec):
+		return fmt.Errorf("no preset for codec %q (have %s)", e.Codec, strings.Join(encoder.PresetCodecs(), ", "))
+	case len(v.Codecs) > 0 && !slices.Contains(v.Codecs, e.Codec):
+		return fmt.Errorf("preset codec %q is not in codecs %v, so its output would never conform", e.Codec, v.Codecs)
+	case e.Quality != "" && !encoder.ValidLevel(e.Quality):
+		return fmt.Errorf("quality %q is not one of %s", e.Quality, strings.Join(encoder.Levels, ", "))
+	}
+	seen := map[string]bool{}
+	for _, a := range e.Accel {
+		if !encoder.ValidAccel(a) || seen[a] {
+			return fmt.Errorf("accel %v: want each at most once, from %v", e.Accel, encoder.Order)
+		}
+		seen[a] = true
+	}
+	if len(e.Accel) > 0 && len(encoder.Candidates(e.Codec, accels(e.Accel))) == 0 {
+		return fmt.Errorf("none of accel %v has a %s encoder", e.Accel, e.Codec)
+	}
+	return nil
+}
+
+func accels(names []string) []encoder.Accel {
+	out := make([]encoder.Accel, len(names))
+	for i, n := range names {
+		out[i] = encoder.Accel(n)
+	}
+	return out
+}
+
+// Unknown names pass: a profile may name an encoder this catalogue lacks.
+func producesAcceptable(name string, codecs []string) error {
+	c, ok := encoder.Produces(name)
+	if !ok || len(codecs) == 0 || slices.Contains(codecs, c) {
+		return nil
+	}
+	return fmt.Errorf("encoder %q writes %s, which is not in codecs %v, so its output would never conform", name, c, codecs)
 }
 
 // Profile assumes Validate has run, which guarantees the profile exists.

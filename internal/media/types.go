@@ -30,6 +30,7 @@ type Stream struct {
 	Type     string `json:"type"`
 	Codec    string `json:"codec"`
 	Profile  string `json:"profile,omitempty"`
+	PixFmt   string `json:"pixFmt,omitempty"`
 	Language string `json:"language"`
 	Title    string `json:"title,omitempty"`
 
@@ -43,6 +44,17 @@ type Stream struct {
 
 	// AttachedPic marks cover art, which ffprobe reports as a video stream.
 	AttachedPic bool `json:"attachedPic,omitempty"`
+}
+
+// Beyond 8 bits a hardware encoder needs its own support, which not every GPU
+// that encodes the codec at 8 bits has.
+func (s Stream) HighBitDepth() bool {
+	for _, depth := range []string{"p10", "p12", "p16", "p010", "p016"} {
+		if strings.Contains(s.PixFmt, depth) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *File) Of(kind string) []Stream {

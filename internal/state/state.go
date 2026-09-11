@@ -56,8 +56,11 @@ type Store struct {
 }
 
 func Open(dir string) (*Store, error) {
+	// Renamed when media.File gains a field something reads, so entries probed
+	// without it are discarded rather than read as zero.
+	os.Remove(filepath.Join(dir, "probes.json"))
 	s := &Store{
-		cachePath: filepath.Join(dir, "probes.json"),
+		cachePath: filepath.Join(dir, "probes-v2.json"),
 		excuseDir: filepath.Join(dir, "excuses"),
 		probes:    map[string]*media.File{},
 	}

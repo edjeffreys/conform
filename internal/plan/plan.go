@@ -45,7 +45,10 @@ type StreamPlan struct {
 	Source int
 	Type   string
 	// Codec is Copy or an encoder name.
-	Codec   string
+	Codec string
+	// Preset is the codec a preset encodes to. Codec stays empty until the
+	// worker that runs the plan finds which encoder for it works there.
+	Preset  string
 	Options map[string]string
 	Filter  string
 	Reason  string
@@ -75,6 +78,17 @@ type Dropped struct {
 func (p *Plan) AddsStreams() bool {
 	for _, s := range p.Streams {
 		if s.Derived {
+			return true
+		}
+	}
+	return false
+}
+
+// Unresolved reports a preset no worker has chosen an encoder for yet, which
+// has no command line to render.
+func (p *Plan) Unresolved() bool {
+	for _, s := range p.Streams {
+		if s.Preset != "" && s.Codec == "" {
 			return true
 		}
 	}
@@ -191,15 +205,21 @@ func planVideo(s media.Stream, rules config.VideoRules, p *Plan) StreamPlan {
 	}
 
 	sp.Codec = rules.Encoder.Name
+	sp.Preset = rules.Encoder.Codec
 	sp.Options = copyOptions(rules.Encoder.Options)
 	sp.Reason = strings.Join(why, ", ")
 	p.InputArgs = rules.Encoder.InputArgs
+	var filters []string
+	if rules.Encoder.Filter != "" {
+		filters = append(filters, rules.Encoder.Filter)
+	}
 	if downscale {
-		sp.Filter = strings.NewReplacer(
+		filters = append(filters, strings.NewReplacer(
 			"{height}", strconv.Itoa(rules.MaxHeight),
 			"{width}", "-2",
-		).Replace(rules.ScaleFilter)
+		).Replace(rules.ScaleFilter))
 	}
+	sp.Filter = strings.Join(filters, ",")
 	p.Reasons = append(p.Reasons, "video: "+sp.Reason)
 	return sp
 }

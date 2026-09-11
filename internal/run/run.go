@@ -40,6 +40,7 @@ type Result struct {
 	Before   int64
 	After    int64
 	Duration time.Duration
+	Encoder  string
 	// Set when this run excused the encode and went on to remux, which is
 	// what Outcome then describes.
 	Excused string
@@ -50,17 +51,30 @@ type Runner struct {
 	Prober *media.Prober
 	Store  *state.Store
 	Logf   func(format string, args ...any)
+	// Notef is shown even when Logf is not: which encoder a preset landed on,
+	// and above all a fall back to software, should never need -verbose.
+	Notef func(format string, args ...any)
 	// Nil still captures stderr for the failure detail; this only decides
 	// whether it is also seen while the encode runs.
 	FFmpegOutput io.Writer
 
 	deviceMu sync.Mutex
 	devices  map[string]error
+
+	encoderMu sync.Mutex
+	choices   map[string]chosen
+	encoders  map[string]bool
 }
 
 func (r *Runner) logf(format string, args ...any) {
 	if r.Logf != nil {
 		r.Logf(format, args...)
+	}
+}
+
+func (r *Runner) notef(format string, args ...any) {
+	if r.Notef != nil {
+		r.Notef(format, args...)
 	}
 }
 
@@ -79,6 +93,15 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile, e
 		res.Outcome = OutcomeSkipped
 		return res, nil
 	}
+
+	if p.Unresolved() {
+		resolved, err := r.resolve(ctx, prof, p.File)
+		if err != nil {
+			return res, err
+		}
+		prof, p = resolved, plan.Build(p.File, resolved)
+	}
+	res.Encoder = p.VideoEncoder()
 
 	// Not an excuse: the obstruction is another file, so it can be cleared
 	// without this one's size or mtime changing, and the excuse would outlive

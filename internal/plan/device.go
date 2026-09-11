@@ -22,7 +22,7 @@ var encoderDevice = map[string]string{
 // start. Both are empty for a plan that needs no device, or one naming
 // hardware conform has no honest way to check.
 func (p *Plan) HWDevice() (kind, spec string) {
-	enc := p.videoEncoder()
+	enc := p.VideoEncoder()
 	i := strings.LastIndex(enc, "_")
 	if i < 0 {
 		return "", ""
@@ -42,7 +42,7 @@ func (p *Plan) HWDevice() (kind, spec string) {
 	return kind, kind + "=conform"
 }
 
-func (p *Plan) videoEncoder() string {
+func (p *Plan) VideoEncoder() string {
 	for _, s := range p.Streams {
 		if s.Type == media.Video && s.Codec != Copy {
 			return s.Codec

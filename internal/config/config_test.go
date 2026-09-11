@@ -63,6 +63,22 @@ func TestLoadRejects(t *testing.T) {
 		"rewrite with no to":    valid + "webhook:\n  rewrite:\n    - from: /tv\n",
 		// Two targets for one prefix leave which applies to map order.
 		"rewrite given twice": valid + "webhook:\n  rewrite:\n    - {from: /tv, to: /data/TV}\n    - {from: /tv/, to: /media/TV}\n",
+
+		// Every file would be re-encoded and every output refused.
+		"encoder writes a rejected codec": strings.Replace(valid, "{name: libx265}", "{name: av1_vaapi}", 1),
+		"preset writes a rejected codec":  strings.Replace(valid, "{name: libx265}", "{codec: av1}", 1),
+		"companion writes a rejected codec": valid + "    audio:\n      codecs: [eac3]\n      encoder: {name: eac3}\n" +
+			"      stereoCompanion:\n        encoder: {name: aac}\n",
+		"preset and name":                     strings.Replace(valid, "{name: libx265}", "{name: libx265, codec: hevc}", 1),
+		"preset with inputArgs":               strings.Replace(valid, "{name: libx265}", "{codec: hevc, inputArgs: [-hwaccel, vaapi]}", 1),
+		"preset with scaleFilter":             strings.Replace(valid, "      encoder: {name: libx265}", "      scaleFilter: scale_vaapi=h={height}\n      encoder: {codec: hevc}", 1),
+		"unknown accel":                       strings.Replace(valid, "{name: libx265}", "{codec: hevc, accel: [cuda]}", 1),
+		"accel given twice":                   strings.Replace(valid, "{name: libx265}", "{codec: hevc, accel: [vaapi, vaapi]}", 1),
+		"accel with no encoder for the codec": strings.Replace(strings.Replace(valid, "codecs: [HEVC]", "codecs: [av1]", 1), "{name: libx265}", "{codec: av1, accel: [videotoolbox]}", 1),
+		"unknown quality":                     strings.Replace(valid, "{name: libx265}", "{codec: hevc, quality: medium}", 1),
+		"accel on a named encoder":            strings.Replace(valid, "{name: libx265}", "{name: libx265, accel: [software]}", 1),
+		"preset on audio":                     valid + "    audio:\n      codecs: [aac]\n      encoder: {codec: aac}\n",
+		"preset with no such codec":           strings.Replace(strings.Replace(valid, "codecs: [HEVC]", "codecs: [vp8]", 1), "{name: libx265}", "{codec: vp8}", 1),
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -85,5 +101,34 @@ func TestLoadNewFileTriggers(t *testing.T) {
 	}
 	if want := (Rewrite{From: "/tv", To: "/data/TV"}); len(c.Webhook.Rewrite) != 1 || c.Webhook.Rewrite[0] != want {
 		t.Errorf("rewrite = %+v, want %+v", c.Webhook.Rewrite, want)
+	}
+}
+
+func TestLoadAcceptsEncoders(t *testing.T) {
+	tests := map[string]string{
+		"preset":                strings.Replace(valid, "{name: libx265}", "{codec: HEVC, accel: [vaapi, software], quality: very-high}", 1),
+		"preset with overrides": strings.Replace(valid, "{name: libx265}", "{codec: hevc, options: {g: \"48\"}}", 1),
+		// The catalogue cannot know every encoder, and must not refuse one.
+		"unknown encoder name": strings.Replace(valid, "{name: libx265}", "{name: hevc_amf}", 1),
+		"any codec accepted":   strings.Replace(strings.Replace(valid, "      codecs: [HEVC]\n", "", 1), "{name: libx265}", "{name: av1_vaapi}", 1),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(t, body); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+}
+
+// A preset brings its own scale filter, so the software default must not be
+// applied over it.
+func TestPresetGetsNoDefaultScaleFilter(t *testing.T) {
+	c, err := load(t, strings.Replace(valid, "{name: libx265}", "{codec: hevc}", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := c.Profiles["standard"].Video.ScaleFilter; f != "" {
+		t.Errorf("scaleFilter = %q, want none", f)
 	}
 }

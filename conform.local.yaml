@@ -13,14 +13,11 @@ profiles:
     video:
       codecs: [hevc]
       maxHeight: 1080
+      # Whatever this machine has: VideoToolbox on a Mac, a GPU where there is
+      # one, libx265 otherwise.
       encoder:
-        name: libx265
-        options:
-          crf: "28"
-          preset: "veryfast"
-          # libx265 writes its own progress banner to stderr, which buries the
-          # actual error when something goes wrong.
-          x265-params: "log-level=error"
+        codec: hevc
+        quality: balanced
     audio:
       languages: [eng, und]
       codecs: [aac, ac3, eac3]

@@ -186,7 +186,7 @@ profiles:
     video:
       codecs: [hevc]       # acceptable as-is; anything else is re-encoded
       maxHeight: 1080      # taller is downscaled
-      encoder: {name: hevc_qsv, options: {global_quality: "24"}}
+      encoder: {codec: hevc, quality: balanced}   # the worker picks the hardware
     audio:
       languages: [eng, und]   # other languages are dropped
       codecs: [aac, ac3, eac3]
@@ -202,20 +202,86 @@ profiles:
 ```
 
 Two files ship with the repo. `conform.example.yaml` is the profile above,
-against Intel QuickSync; `conform.local.yaml` is the same rules with `libx265`
-instead, so it runs anywhere ffmpeg does.
+preferring Intel QuickSync; `conform.local.yaml` is the same rules on whatever
+the machine has, so it runs anywhere ffmpeg does.
 
 `execution.tempDir` needs room for one source-sized file per concurrent worker.
 Don't point it at replicated network storage — a transcode writes a full
 working copy of everything it processes, and a replicated volume multiplies
 that write by its replica count.
 
+### Encoders
+
+A video encoder is either a **preset**, naming the codec to write, or a
+**named** ffmpeg encoder you configure by hand.
+
+```yaml
+encoder:
+  codec: av1                        # h264, hevc or av1
+  accel: [qsv, vaapi, software]     # optional; default nvenc, qsv, vaapi, videotoolbox, software
+  quality: high                     # optional; default balanced
+```
+
+The worker that encodes tries each accelerator's encoder for that codec in
+order — a few real frames each, once per process — and uses the first that
+works. The plan does not depend on which: the orchestrator plans without a GPU,
+the worker with one, and both reach the same verdict and template. Every pass
+says what it landed on, and a fall back to software says why:
+
+```
+encoder   10-bit hevc → hevc_vaapi on /dev/dri/renderD128 (Intel iHD driver for Intel(R) Gen Graphics - 25.1.4; i915 PCI 8086:46a6)
+encoder   8-bit av1 → libsvtav1 — SOFTWARE: no hardware encoder for it works on this worker
+          ✗ av1_nvenc on GPU 0: not in this ffmpeg build
+          ✗ av1_qsv on /dev/dri/renderD128: Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height
+          ✗ av1_vaapi on /dev/dri/renderD128: No usable encoding profile found.
+```
+
+A worker that finds nothing — only possible when `accel` leaves out
+`software` — exits non-zero, like any other fault.
+
+`quality` is one of `highest`, `very-high`, `high`, `balanced`, `low`,
+`very-low`, `lowest`, each tuned per encoder. They are approximate: the encoders
+share no scale, and the same level will not produce identical output on two of
+them. `options` still apply on top, to whichever encoder is chosen — pin one
+with `accel` before setting options only it understands.
+
+<details>
+<summary><b>What a preset does that a named encoder leaves to you</b></summary>
+
+- **Decodes on the GPU where it can, and uploads where it cannot.** A source the
+  GPU has no decoder for is decoded in software and uploaded, rather than
+  failing the encode.
+- **Keeps the source's bit depth.** A 10-bit source is only given an encoder
+  that was tested writing 10-bit output — some accept 10-bit frames and quietly
+  write 8-bit — and otherwise falls through to the next accelerator.
+- **Scales on the device**, with `scale_vaapi`, `scale_qsv`, `scale_cuda` or
+  `scale_vt`, so frames are not downloaded around every resize.
+
+</details>
+
+A named encoder is exactly as before — `name`, `options`, `inputArgs` and the
+profile's `scaleFilter`, used verbatim:
+
+```yaml
+scaleFilter: "scale_vaapi=h={height}:w=-1"
+encoder:
+  name: hevc_vaapi
+  inputArgs: [-hwaccel, vaapi, -hwaccel_output_format, vaapi, -hwaccel_device, /dev/dri/renderD128]
+  options: {global_quality: "20"}
+```
+
+Either way, a profile whose encoder writes a codec its own `codecs` rule rejects
+is refused at load. It would otherwise re-encode every file and have every
+output rejected as not conforming.
+
 <details>
 <summary><b>QuickSync and older Intel silicon</b></summary>
 
 QuickSync needs the oneVPL runtime for Gen11 or newer silicon, which the image
-ships. Older Intel parts have no runtime in current Debian and want
-`hevc_vaapi`, which drives the same hardware through the layer underneath.
+ships. Older Intel parts have no runtime in current Debian and want VAAPI,
+which drives the same hardware through the layer underneath — a preset tries
+both. AV1 encode needs Arc or Meteor Lake and newer; older parts decode it
+but cannot write it.
 
 Encoder options are emitted with a full stream specifier (`-crf:v:0`, not
 `-crf`), so a profile stays correct on a file with more than one video track.
@@ -476,8 +542,9 @@ a hundred workers would otherwise race over it.
 
 A profile names a `core/v1 PodTemplate` and conform copies it — device
 resources, node selectors, tolerations, the mounts that make the library
-visible — without interpreting any of it. conform never learns what a GPU is,
-so this works against any device plugin.
+visible — without interpreting any of it. conform never decides where it runs,
+so this works against any device plugin. A worker only finds out what ffmpeg
+can do inside its own container, and a [preset](#encoders) uses that.
 
 ```yaml
 apiVersion: v1

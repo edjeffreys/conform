@@ -44,8 +44,10 @@ Decided, so it does not need re-deriving. Not all of it is built yet.
   Job per non-conformant file; the scheduler places it. No custom queue, no
   broker.
 - **Placement is data.** A profile names a `core/v1 PodTemplate`; conform copies
-  it, sets the container args, and wraps it in a Job. conform never learns what
-  a GPU is, so it works against any device plugin.
+  it, sets the container args, and wraps it in a Job. conform never decides
+  where it runs, so it works against any device plugin. A worker may discover
+  what ffmpeg can do in its own container — that is how an encoder preset
+  resolves — but only in `run`, never in a plan, and never recorded in state.
 - **Exit 0 whenever a verdict was reached**, even when the verdict is "this file
   cannot be processed". Non-zero is reserved for faults. Job `backoffLimit` then
   retries infrastructure failures and the excuse ledger owns media failures,
@@ -74,6 +76,7 @@ comment that repeats its own line crowds out the ones that carry information.
 cmd/conform/     the binary; one file per subcommand's plumbing
 internal/
   config/        desired state — profiles, libraries, execution settings
+  encoder/       ffmpeg's encoders: codec presets, quality levels, rendering
   media/         observed state — ffprobe, normalised into media.File
   orchestrate/   turning a plan into one Kubernetes Job per file
   plan/          the diff, and rendering it as ffmpeg arguments
@@ -86,8 +89,8 @@ internal/
 
 ## Testing
 
-`go test ./...`. `media` has no tests, because it shells out; `run` is tested
-only where it does not. Prefer growing the table tests in `plan/plan_test.go` —
+`go test ./...`. `media` and `run` are tested only where they do not shell
+out. Prefer growing the table tests in `plan/plan_test.go` —
 the planner is where correctness actually lives, and it is pure, so it is cheap
 to test exhaustively.
 
