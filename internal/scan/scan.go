@@ -27,10 +27,8 @@ func Walk(lib config.Library) ([]Entry, error) {
 			}
 			return nil
 		}
-		name := d.Name()
 		if d.IsDir() {
-			// Sidecar directories NAS software scatters through media trees.
-			if path != lib.Path && (strings.HasPrefix(name, ".") || name == "@eaDir" || name == "lost+found") {
+			if path != lib.Path && SkipDir(d.Name()) {
 				return fs.SkipDir
 			}
 			return nil
@@ -51,6 +49,11 @@ func Walk(lib config.Library) ([]Entry, error) {
 	}
 	slices.SortFunc(out, func(a, b Entry) int { return strings.Compare(a.Path, b.Path) })
 	return out, nil
+}
+
+// Sidecar directories NAS software scatters through media trees.
+func SkipDir(name string) bool {
+	return strings.HasPrefix(name, ".") || name == "@eaDir" || name == "lost+found"
 }
 
 // Includes reports whether one path is a file the library covers. Exported so

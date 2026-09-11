@@ -343,16 +343,22 @@ per worker.
 
 ## New files
 
-A pass finds everything eventually. A webhook has conform pick up a new file as
-soon as another service reports it instead, and keeps a full `apply` or
+A pass finds everything eventually. Two settings have conform pick up a new
+file as soon as it arrives instead, and either one keeps a full `apply` or
 `orchestrate` running after its first pass:
 
 ```yaml
+libraries:
+  - name: tv
+    path: /data/TV
+    profile: standard
+    watch: true          # act on files as they appear
+
 webhook:
   listen: ":8080"        # accept new files' paths from other services
 ```
 
-conform only learns *where to look*. The file is judged exactly as a
+Either way, conform only learns *where to look*. The file is judged exactly as a
 full pass would judge it, so one that already conforms is left alone.
 
 A run given file paths, `-limit` or `-dry-run` still exits after one pass. That
@@ -372,9 +378,9 @@ curl -X POST http://conform:8080/webhook \
   -d '{"paths": ["/data/TV/Show/Season 1/Show - S01E01.mkv"]}'
 ```
 
-conform answers `202` once the paths are queued and acts on them straight away.
-A path no library covers is refused with `422`, and the whole request with it,
-so a mistake shows up at the sender instead of vanishing.
+conform answers `202` once the paths are queued and acts on them straight away,
+with no settle delay. A path no library covers is refused with `422`, and the
+whole request with it, so a mistake shows up at the sender instead of vanishing.
 
 Services that send their own payload rather than a list of paths get a route
 that translates it:
@@ -387,7 +393,8 @@ that translates it:
 Add each under **Settings → Connect → Webhook**; **Test** should succeed. Any
 other event they send is answered `200` and ignored, so ticking more triggers is
 harmless. Another service is one mapper and a handful of its real payloads — see
-[`internal/webhook`](internal/webhook/README.md).
+[`internal/webhook`](internal/webhook/README.md). For downloads managed by Sonarr or Radarr this is the better choice
+than watching: they notify only once an import is complete.
 
 When a service sees the library at a different path than conform does, rewrite
 the prefix. The longest matching `from` wins, and it only matches whole path
@@ -403,6 +410,34 @@ webhook:
 
 There is no authentication yet. Keep the port on a network only your media stack
 can reach — a cluster Service rather than an Ingress.
+
+### Watching a folder
+
+`watch: true` catches files that arrive any other way — copied, downloaded or
+moved in, at the root or any depth. A directory moved in whole is walked, so a
+season arrives as its episodes.
+
+A watched file is acted on once it has gone a minute without a write, so a
+download is not picked up half-written. That is a heuristic. Just before
+committing, conform also checks the source still has the size and mtime it was
+planned from, and drops the encode without charging an excuse if not. A
+downloader that writes into an incomplete directory and moves the file in once
+it is done never exposes a partial file at all.
+
+<details>
+<summary><b>Where watching does not work</b></summary>
+
+A missed event costs latency, never correctness — but it is missed silently:
+
+- **Network mounts.** NFS and SMB deliver no events for writes made by another
+  machine. Leave `watch` off for those and use the webhook or `-interval`.
+- **Watch limits.** Linux needs one inotify watch per directory, and exits
+  saying so when `fs.inotify.max_user_watches` runs out. macOS keeps a file
+  descriptor per watched file, so it does not suit a large library.
+- **A burst too big for the kernel's queue.** conform notices the dropped events
+  and walks every library again.
+
+</details>
 
 ## Distribution
 

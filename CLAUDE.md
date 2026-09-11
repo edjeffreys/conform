@@ -80,6 +80,7 @@ internal/
   run/           executing one plan: encode, verify, replace
   scan/          walking a library
   state/         probe cache and excuse records
+  watch/         filesystem events, settled into paths worth re-judging
   webhook/       paths posted by other services; translators for their payloads
 ```
 
