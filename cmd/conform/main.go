@@ -141,9 +141,10 @@ func newSession(cfgPath, library string, paths []string, limit int, verbose bool
 }
 
 type item struct {
-	lib  config.Library
-	prof config.Profile
-	plan *plan.Plan
+	lib     config.Library
+	prof    config.Profile
+	plan    *plan.Plan
+	excused string
 }
 
 // A file whose cached probe still matches its size and mtime costs a stat
@@ -198,7 +199,8 @@ collect:
 // all, which is the caller's to interpret.
 func (s *session) consider(ctx context.Context, lib config.Library, prof config.Profile, path string, info fs.FileInfo, includeExcused bool, t *tally) (*item, error) {
 	size, mod := info.Size(), info.ModTime()
-	if ex := s.store.Excuse(path, size, mod); ex != nil && ex.Excused && !includeExcused {
+	ex := s.store.Excuse(path, size, mod)
+	if ex != nil && ex.Excused && !includeExcused {
 		t.excused++
 		return nil, nil
 	}
@@ -220,7 +222,11 @@ func (s *session) consider(ctx context.Context, lib config.Library, prof config.
 	if p.Action == plan.ActionNone {
 		return nil, nil
 	}
-	return &item{lib: lib, prof: prof, plan: p}, nil
+	it := &item{lib: lib, prof: prof, plan: p}
+	if ex != nil && ex.Excused {
+		it.excused = ex.Reason
+	}
+	return it, nil
 }
 
 // changed is nil for a full pass, and otherwise holds the paths a watch saw.
@@ -437,6 +443,9 @@ func cmdPlan(ctx context.Context, args []string) error {
 
 func describe(it item) {
 	fmt.Printf("%-9s %s\n", it.plan.Action, rel(it.lib, it.plan.File.Path))
+	if it.excused != "" {
+		fmt.Printf("          ! excused: %s\n", it.excused)
+	}
 	for _, why := range it.plan.Reasons {
 		fmt.Printf("          · %s\n", why)
 	}
@@ -802,17 +811,23 @@ func report(it item, res run.Result) {
 	name := rel(it.lib, res.Path)
 	switch res.Outcome {
 	case run.OutcomeReplaced:
-		saved := ""
-		if res.Before > 0 && res.After > 0 {
-			saved = fmt.Sprintf(" %s → %s (%+.0f%%)", human(res.Before), human(res.After),
-				(float64(res.After)/float64(res.Before)-1)*100)
-		}
-		fmt.Printf("%-9s %s%s in %s\n", res.Action, name, saved, res.Duration.Round(time.Second))
+		fmt.Printf("%-9s %s%s in %s\n", res.Action, name, saved(res), res.Duration.Round(time.Second))
 	case run.OutcomeExcused:
 		fmt.Printf("%-9s %s — %s\n", "excused", name, res.Detail)
+		if res.Action == plan.ActionRemux {
+			fmt.Printf("%-9s %s%s in %s\n", res.Action, name, saved(res), res.Duration.Round(time.Second))
+		}
 	case run.OutcomeFailed:
 		fmt.Printf("%-9s %s\n%s\n", "FAILED", name, indent(res.Detail))
 	}
+}
+
+func saved(res run.Result) string {
+	if res.Before <= 0 || res.After <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(" %s → %s (%+.0f%%)", human(res.Before), human(res.After),
+		(float64(res.After)/float64(res.Before)-1)*100)
 }
 
 func rel(lib config.Library, path string) string {

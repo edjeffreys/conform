@@ -556,3 +556,89 @@ func TestFFmpegArgsAreDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestCopyOnlyNeverEncodes(t *testing.T) {
+	profiles := map[string]config.Profile{
+		"standard":  profile(),
+		"companion": withCompanion(profile()),
+		"ordered":   ordered([]string{config.OrderLanguage, config.OrderChannels}, []string{config.OrderLanguage}),
+	}
+	files := []*media.File{
+		file("mkv", vid("av1", 2160), aud("truehd", "eng", 8), aud("aac", "eng", 6)),
+		file("avi", vid("h264", 1080), aud("dts", "fre", 6), sub("hdmv_pgs_subtitle", "eng")),
+		file("mp4", vid("hevc", 1080), aud("aac", "und", 6), aud("aac", "eng", 2)),
+	}
+	for name, prof := range profiles {
+		for _, f := range files {
+			p := Build(f, CopyOnly(prof))
+			if p.Action == ActionTranscode || p.AddsStreams() || len(p.InputArgs) > 0 {
+				t.Errorf("%s: a copy-only plan still encodes: %s", name, p)
+			}
+		}
+	}
+}
+
+func TestCopyOnlyLeavesTheProfileAlone(t *testing.T) {
+	prof := withCompanion(profile())
+	CopyOnly(prof)
+	if len(prof.Video.Codecs) == 0 || prof.Audio.MaxChannels == 0 || prof.Audio.StereoCompanion == nil {
+		t.Errorf("CopyOnly changed the profile it was given: %+v", prof)
+	}
+}
+
+// The case that motivates it: the encode is not worth having, but the file
+// still carries streams and an order the profile does not accept.
+func TestCopyOnlyKeepsTheRemuxWork(t *testing.T) {
+	prof := ordered([]string{config.OrderLanguage}, []string{config.OrderLanguage})
+	prof.Audio.Languages = []string{"eng", "und"}
+	prof.Subtitles.Languages = []string{"eng"}
+	f := file("mp4",
+		vid("av1", 1080),
+		aud("aac", "und", 2), aud("truehd", "eng", 8), aud("dts", "fre", 6),
+		sub("subrip", "fre"), sub("subrip", "eng"),
+	)
+	if got := Build(f, prof).Action; got != ActionTranscode {
+		t.Fatalf("expected a transcode against the full profile, got %s", got)
+	}
+
+	p := Build(f, CopyOnly(prof))
+	if p.Action != ActionRemux {
+		t.Fatalf("got %s, want a remux", p)
+	}
+	for _, s := range p.Streams {
+		if s.Codec != Copy {
+			t.Errorf("stream %d is %s, want copy", s.Source, s.Codec)
+		}
+	}
+	if len(p.Dropped) != 2 {
+		t.Errorf("dropped %v, want the French audio and subtitle", p.Dropped)
+	}
+	if got := sources(p, media.Audio); !slices.Equal(got, []int{2, 1}) {
+		t.Errorf("audio order = %v, want [2 1]", got)
+	}
+	if got := sources(p, media.Subtitle); !slices.Equal(got, []int{5}) {
+		t.Errorf("subtitles = %v, want [5]", got)
+	}
+}
+
+// The remux is verified by re-planning against CopyOnly, so what it emits has
+// to come back none there, channels untouched.
+func TestCopyOnlyConverges(t *testing.T) {
+	prof := ordered([]string{config.OrderLanguage, config.OrderChannels}, []string{config.OrderLanguage})
+	prof.Audio.Languages = []string{"eng", "und"}
+	before := file("mp4",
+		vid("av1", 2160),
+		aud("eac3", "eng", 6), aud("truehd", "eng", 8), aud("aac", "fre", 2),
+		sub("subrip", "eng"),
+	)
+	if got := Build(before, CopyOnly(prof)).Action; got != ActionRemux {
+		t.Fatalf("expected a remux, got %s", got)
+	}
+
+	// What ffmpeg emits for that plan: the 8-channel stream first, since a
+	// copy keeps its channels, and the French track gone.
+	after := file("mkv", vid("av1", 2160), aud("truehd", "eng", 8), aud("eac3", "eng", 6), sub("subrip", "eng"))
+	if got := Build(after, CopyOnly(prof)); got.Action != ActionNone {
+		t.Fatalf("the remux still needs work (%s) — the fallback would reject its own output", got)
+	}
+}

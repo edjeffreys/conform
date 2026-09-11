@@ -167,6 +167,14 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	return p
 }
 
+// Subtitle codecs stay: a subtitle rule drops a stream rather than encoding it.
+func CopyOnly(prof config.Profile) config.Profile {
+	prof.Video.Codecs, prof.Video.MaxHeight = nil, 0
+	prof.Audio.Codecs, prof.Audio.MaxChannels = nil, 0
+	prof.Audio.StereoCompanion = nil
+	return prof
+}
+
 func planVideo(s media.Stream, rules config.VideoRules, p *Plan) StreamPlan {
 	sp := StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy, Language: s.Language}
 
