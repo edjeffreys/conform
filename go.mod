@@ -4,7 +4,7 @@ module github.com/edjeffreys/conform
 
 go 1.26.0
 
-toolchain go1.26.8
+toolchain go1.27.1
 
 require (
 	github.com/fsnotify/fsnotify v1.10.1
