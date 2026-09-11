@@ -199,3 +199,30 @@ func TestPruneDropsVanishedPaths(t *testing.T) {
 		t.Error("excuse for a vanished path survived")
 	}
 }
+
+// A remux of a file whose encode is excused spends the same budget, or one
+// ffmpeg cannot read would be remuxed on every pass forever.
+func TestFailOnAnExcusedEncodeEscalatesToTheWholeFile(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mod := time.Now().Truncate(time.Second)
+	if err := s.ExcuseEncode("/m/x.mkv", 1, mod, "re-encode was larger"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Fail("/m/x.mkv", 1, mod, "boom", 2); err != nil {
+		t.Fatal(err)
+	}
+	if e := s.Excuse("/m/x.mkv", 1, mod); e == nil || !e.EncodeOnly || e.Failures != 1 {
+		t.Fatalf("one failure under budget should leave only the encode excused: %+v", e)
+	}
+
+	if err := s.Fail("/m/x.mkv", 1, mod, "boom", 2); err != nil {
+		t.Fatal(err)
+	}
+	if e := s.Excuse("/m/x.mkv", 1, mod); e == nil || !e.Excused || e.EncodeOnly {
+		t.Errorf("the whole file should be excused at the threshold: %+v", e)
+	}
+}

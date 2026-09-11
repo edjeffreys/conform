@@ -94,7 +94,7 @@ Flags for plan, apply and orchestrate:
   -verbose        log the ffmpeg command lines, or the jobs orchestrate builds
 
 Flags for apply only:
-  -retry-excused  reconsider files previously excused after a failure
+  -retry-excused  reconsider files previously excused, encodes included
   -ffmpeg-output  stream ffmpeg's own output while it runs
 
 Flags for apply and orchestrate:
@@ -141,10 +141,11 @@ func newSession(cfgPath, library string, paths []string, limit int, verbose bool
 }
 
 type item struct {
-	lib     config.Library
-	prof    config.Profile
-	plan    *plan.Plan
-	excused string
+	lib  config.Library
+	prof config.Profile
+	plan *plan.Plan
+	// Why the file's encode is excused, when prof is plan.CopyOnly because of it.
+	excusedEncode string
 }
 
 // A file whose cached probe still matches its size and mtime costs a stat
@@ -199,10 +200,13 @@ collect:
 // all, which is the caller's to interpret.
 func (s *session) consider(ctx context.Context, lib config.Library, prof config.Profile, path string, info fs.FileInfo, includeExcused bool, t *tally) (*item, error) {
 	size, mod := info.Size(), info.ModTime()
-	ex := s.store.Excuse(path, size, mod)
-	if ex != nil && ex.Excused && !includeExcused {
-		t.excused++
-		return nil, nil
+	var excusedEncode string
+	if ex := s.store.Excuse(path, size, mod); ex != nil && ex.Excused && !includeExcused {
+		if !ex.EncodeOnly {
+			t.excused++
+			return nil, nil
+		}
+		excusedEncode = ex.Reason
 	}
 
 	f := s.store.Cached(path, size, mod)
@@ -217,16 +221,19 @@ func (s *session) consider(ctx context.Context, lib config.Library, prof config.
 		}
 	}
 
+	if excusedEncode != "" {
+		prof = plan.CopyOnly(prof)
+	}
 	p := plan.Build(f, prof)
+	if p.Action == plan.ActionNone && excusedEncode != "" {
+		t.excused++
+		return nil, nil
+	}
 	t.count(p.Action)
 	if p.Action == plan.ActionNone {
 		return nil, nil
 	}
-	it := &item{lib: lib, prof: prof, plan: p}
-	if ex != nil && ex.Excused {
-		it.excused = ex.Reason
-	}
-	return it, nil
+	return &item{lib: lib, prof: prof, plan: p, excusedEncode: excusedEncode}, nil
 }
 
 // changed is nil for a full pass, and otherwise holds the paths a watch saw.
@@ -418,7 +425,7 @@ func planFlags(fs *flag.FlagSet) (cfg, lib *string, limit *int, verbose *bool) {
 func cmdPlan(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("plan", flag.ExitOnError)
 	cfgPath, library, limit, verbose := planFlags(fs)
-	showExcused := fs.Bool("show-excused", false, "include files excused after a failure")
+	showExcused := fs.Bool("show-excused", false, "plan excused files as -retry-excused would")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -443,8 +450,8 @@ func cmdPlan(ctx context.Context, args []string) error {
 
 func describe(it item) {
 	fmt.Printf("%-9s %s\n", it.plan.Action, rel(it.lib, it.plan.File.Path))
-	if it.excused != "" {
-		fmt.Printf("          ! excused: %s\n", it.excused)
+	if it.excusedEncode != "" {
+		fmt.Printf("          · encode excused: %s\n", it.excusedEncode)
 	}
 	for _, why := range it.plan.Reasons {
 		fmt.Printf("          · %s\n", why)
@@ -753,7 +760,7 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool, changed [
 				mu.Lock()
 				describe(it)
 				mu.Unlock()
-				res, err := runner.Apply(ctx, it.plan, it.prof)
+				res, err := runner.Apply(ctx, it.plan, it.prof, it.excusedEncode)
 				mu.Lock()
 				if err != nil {
 					// Not once the context is done: the error is then this
@@ -809,25 +816,22 @@ func (s *session) pass(ctx context.Context, dryRun, retryExcused bool, changed [
 
 func report(it item, res run.Result) {
 	name := rel(it.lib, res.Path)
+	if res.Excused != "" {
+		fmt.Printf("%-9s %s — %s\n", "excused", rel(it.lib, it.plan.File.Path), res.Excused)
+	}
 	switch res.Outcome {
 	case run.OutcomeReplaced:
-		fmt.Printf("%-9s %s%s in %s\n", res.Action, name, saved(res), res.Duration.Round(time.Second))
+		saved := ""
+		if res.Before > 0 && res.After > 0 {
+			saved = fmt.Sprintf(" %s → %s (%+.0f%%)", human(res.Before), human(res.After),
+				(float64(res.After)/float64(res.Before)-1)*100)
+		}
+		fmt.Printf("%-9s %s%s in %s\n", res.Action, name, saved, res.Duration.Round(time.Second))
 	case run.OutcomeExcused:
 		fmt.Printf("%-9s %s — %s\n", "excused", name, res.Detail)
-		if res.Action == plan.ActionRemux {
-			fmt.Printf("%-9s %s%s in %s\n", res.Action, name, saved(res), res.Duration.Round(time.Second))
-		}
 	case run.OutcomeFailed:
 		fmt.Printf("%-9s %s\n%s\n", "FAILED", name, indent(res.Detail))
 	}
-}
-
-func saved(res run.Result) string {
-	if res.Before <= 0 || res.After <= 0 {
-		return ""
-	}
-	return fmt.Sprintf(" %s → %s (%+.0f%%)", human(res.Before), human(res.After),
-		(float64(res.After)/float64(res.Before)-1)*100)
 }
 
 func rel(lib config.Library, path string) string {

@@ -154,10 +154,12 @@ the file's size and mtime, so replacing the file at a path discards its excuse
 with it — a new download is judged on its own merits, never on its
 predecessor's.
 
-A rejected re-encode excuses the encode, not the rest of the plan. The file is
-still remuxed to drop the streams, fix the order and change the container the
-profile asks for, verified against the profile with its encoding rules taken
-out, and the excuse is recorded against the file that remux leaves behind.
+A larger re-encode excuses the encode, not the file. From then on the file is
+planned against the profile with its encoding rules taken out, so it is still
+remuxed to drop streams, fix the order or change the container — straight
+away, and again whenever the profile changes — and the excuse follows the file
+each remux leaves behind. A file that fails, or whose remux is itself rejected,
+is excused outright. `-retry-excused` puts the encode back on the table.
 
 Only an attempt that reached the media can spend a file's error budget. A
 failure before that — a device that will not open, a volume with no room left

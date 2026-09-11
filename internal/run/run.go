@@ -40,6 +40,9 @@ type Result struct {
 	Before   int64
 	After    int64
 	Duration time.Duration
+	// Set when this run excused the encode and went on to remux, which is
+	// what Outcome then describes.
+	Excused string
 }
 
 type Runner struct {
@@ -64,61 +67,39 @@ func (r *Runner) logf(format string, args ...any) {
 // Apply carries out p against its file. It returns a Result for every path it
 // touches, including the ones it decides to leave alone; err is reserved for
 // faults that should stop the run, not for a file that could not be encoded.
-func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile) (Result, error) {
-	if p.Action == plan.ActionNone {
-		return Result{Path: p.File.Path, Action: p.Action, Before: p.File.Size, Outcome: OutcomeSkipped}, nil
-	}
-
-	res, v, err := r.execute(ctx, p, prof)
-	if err != nil {
-		return res, err
-	}
-	switch v {
-	case committed:
-		res.Outcome = OutcomeReplaced
-	case refused:
-		res.Outcome = OutcomeFailed
-	case failed:
-		res = r.fail(p, res)
-	case rejected:
-		return r.reject(ctx, p, prof, res)
-	}
-	return res, nil
-}
-
-type verdict int
-
-const (
-	committed verdict = iota
-	refused
-	failed
-	rejected
-)
-
-func (r *Runner) execute(ctx context.Context, p *plan.Plan, prof config.Profile) (Result, verdict, error) {
+//
+// excusedEncode is the reason for the file's excused encode when p was planned
+// against plan.CopyOnly because of it, and empty otherwise.
+func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile, excusedEncode string) (Result, error) {
 	src := p.File.Path
 	res := Result{Path: src, Action: p.Action, Before: p.File.Size}
 	start := time.Now()
+
+	if p.Action == plan.ActionNone {
+		res.Outcome = OutcomeSkipped
+		return res, nil
+	}
 
 	// Not an excuse: the obstruction is another file, so it can be cleared
 	// without this one's size or mtime changing, and the excuse would outlive
 	// its cause. Repeated at commit time, to catch one appearing mid-encode.
 	if detail, ok := destinationFree(src, p.Container); !ok {
+		res.Outcome = OutcomeFailed
 		res.Detail = detail
-		return res, refused, nil
+		return res, nil
 	}
 
 	// Before the encode, so a worker whose hardware is missing fails on its
 	// first file instead of charging every file in the library an excuse.
 	if _, spec := p.HWDevice(); spec != "" {
 		if err := r.checkDevice(ctx, spec); err != nil {
-			return res, refused, err
+			return res, err
 		}
 	}
 
 	tmp, err := r.tempPath(src, p.Container)
 	if err != nil {
-		return res, refused, err
+		return res, err
 	}
 	defer os.Remove(tmp)
 
@@ -126,31 +107,30 @@ func (r *Runner) execute(ctx context.Context, p *plan.Plan, prof config.Profile)
 	r.logf("ffmpeg %s", strings.Join(args, " "))
 	if out, err := runFFmpeg(ctx, r.Exec.FFmpeg, args, r.FFmpegOutput); err != nil {
 		if ctx.Err() != nil {
-			return res, refused, ctx.Err()
+			return res, ctx.Err()
 		}
 		if sig := deviceFault(out); sig != "" {
-			return res, refused, faultError(fmt.Sprintf("the hardware device failed during the encode (%s)", sig), out)
+			return res, faultError(fmt.Sprintf("the hardware device failed during the encode (%s)", sig), out)
 		}
-		res.Detail = fmt.Sprintf("ffmpeg: %v: %s", err, out)
-		return res, failed, nil
+		return r.fail(src, p, res, fmt.Sprintf("ffmpeg: %v: %s", err, out)), nil
 	}
 
 	if detail, ok := r.verify(ctx, p, prof, tmp); !ok {
-		res.Detail = detail
-		return res, rejected, nil
+		return r.reject(ctx, p, prof, res, detail)
 	}
 
 	info, err := os.Stat(tmp)
 	if err != nil {
-		return res, refused, err
+		return res, err
 	}
 	res.After = info.Size()
 
 	// Not an excuse either: a download still being written has a new size and
 	// mtime by now, and the next pass judges it fresh.
 	if detail, ok := unchanged(p.File); !ok {
+		res.Outcome = OutcomeFailed
 		res.Detail = detail
-		return res, refused, nil
+		return res, nil
 	}
 
 	// Every way this fails is the filesystem's — a full volume, a read-only
@@ -160,18 +140,25 @@ func (r *Runner) execute(ctx context.Context, p *plan.Plan, prof config.Profile)
 	final, err := r.replace(tmp, src, p.Container)
 	if err != nil {
 		if final != "" {
-			return res, refused, fmt.Errorf("%s was replaced, but %w", filepath.Base(final), err)
+			return res, fmt.Errorf("%s was replaced, but %w", filepath.Base(final), err)
 		}
-		return res, refused, fmt.Errorf("cannot commit over %s: %w", filepath.Base(src), err)
+		return res, fmt.Errorf("cannot commit over %s: %w", filepath.Base(src), err)
 	}
 
 	r.Store.Forget(src)
 	if final != src {
 		r.Store.Forget(final)
 	}
+	res.Outcome = OutcomeReplaced
 	res.Path = final
 	res.Duration = time.Since(start)
-	return res, committed, nil
+	if excusedEncode != "" {
+		// Keyed on the old size and mtime, the next pass would encode it again.
+		if err := r.excuseEncode(final, excusedEncode); err != nil {
+			res.Detail = fmt.Sprintf("the excused encode was not carried to the remuxed file: %v", err)
+		}
+	}
+	return res, nil
 }
 
 // The second plan must come back ActionNone. That is the direct proof the file
@@ -252,46 +239,50 @@ func (r *Runner) replace(tmp, src, container string) (string, error) {
 // way: ffmpeg read this file and could not encode it. Anything that fails
 // without reaching the media is the worker's and returns an error, so a
 // broken worker cannot excuse a library it never processed.
-func (r *Runner) fail(p *plan.Plan, res Result) Result {
-	if err := r.Store.Fail(p.File.Path, p.File.Size, p.File.ModTime, res.Detail, r.Exec.MaxFailures); err != nil {
-		res.Detail = fmt.Sprintf("%s (and recording the failure failed: %v)", res.Detail, err)
+func (r *Runner) fail(src string, p *plan.Plan, res Result, detail string) Result {
+	if err := r.Store.Fail(src, p.File.Size, p.File.ModTime, detail, r.Exec.MaxFailures); err != nil {
+		detail = fmt.Sprintf("%s (and recording the failure failed: %v)", detail, err)
 	}
 	res.Outcome = OutcomeFailed
+	res.Detail = detail
 	return res
 }
 
 // Excused immediately, unlike a failure: retrying produces the same output, so
 // a second attempt buys nothing but GPU time.
-func (r *Runner) reject(ctx context.Context, p *plan.Plan, prof config.Profile, res Result) (Result, error) {
+func (r *Runner) reject(ctx context.Context, p *plan.Plan, prof config.Profile, res Result, detail string) (Result, error) {
 	res.Outcome = OutcomeExcused
-	path, size, mod := p.File.Path, p.File.Size, p.File.ModTime
+	res.Detail = detail
+	if p.Action != plan.ActionTranscode {
+		if err := r.Store.Reject(p.File.Path, p.File.Size, p.File.ModTime, detail); err != nil {
+			res.Detail = fmt.Sprintf("%s (and recording the excuse failed: %v)", detail, err)
+		}
+		return res, nil
+	}
 
+	// Recorded before the remux, so a fault during it is retried as the remux
+	// alone rather than as another encode.
+	if err := r.Store.ExcuseEncode(p.File.Path, p.File.Size, p.File.ModTime, detail); err != nil {
+		res.Detail = fmt.Sprintf("%s (and recording the excuse failed: %v)", detail, err)
+		return res, nil
+	}
 	copyOnly := plan.CopyOnly(prof)
-	if fb := plan.Build(p.File, copyOnly); p.Action == plan.ActionTranscode && fb.Action == plan.ActionRemux {
-		r.logf("rejected: %s; remuxing without the encode", res.Detail)
-		done, v, err := r.execute(ctx, fb, copyOnly)
-		if err != nil {
-			// Before the excuse is written, or the retry would skip the file.
-			return res, err
-		}
-		if v != committed {
-			res.Detail += "; the remux without it did not complete either: " + done.Detail
-		} else {
-			info, err := os.Stat(done.Path)
-			if err != nil {
-				return res, err
-			}
-			// Keyed on the old size and mtime, the next pass would encode it again.
-			path, size, mod = done.Path, info.Size(), info.ModTime()
-			res.Path, res.Action, res.After, res.Duration = done.Path, plan.ActionRemux, done.After, done.Duration
-			res.Detail += "; remuxed without the encode"
-		}
+	fb := plan.Build(p.File, copyOnly)
+	if fb.Action == plan.ActionNone {
+		return res, nil
 	}
+	r.logf("excused the encode: %s; remuxing without it", detail)
+	done, err := r.Apply(ctx, fb, copyOnly, detail)
+	done.Excused = detail
+	return done, err
+}
 
-	if err := r.Store.Reject(path, size, mod, res.Detail); err != nil {
-		res.Detail = fmt.Sprintf("%s (and recording the excuse failed: %v)", res.Detail, err)
+func (r *Runner) excuseEncode(path, reason string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
 	}
-	return res, nil
+	return r.Store.ExcuseEncode(path, info.Size(), info.ModTime(), reason)
 }
 
 func (r *Runner) tempPath(src, container string) (string, error) {
