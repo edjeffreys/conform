@@ -1,0 +1,34 @@
+{
+  "movie": {"id": 310, "title": "Dune: Part Two", "year": 2024, "folderPath": "/data/Movies/Dune Part Two (2024)", "tmdbId": 693134, "tags": []},
+  "remoteMovie": {"tmdbId": 693134, "imdbId": "tt15239678", "title": "Dune: Part Two", "year": 2024},
+  "movieFile": {
+    "id": 955,
+    "relativePath": "Dune Part Two (2024) Remux-1080p.mkv",
+    "path": "/data/Movies/Dune Part Two (2024)/Dune Part Two (2024) Remux-1080p.mkv",
+    "quality": "Remux-1080p",
+    "qualityVersion": 1,
+    "indexerFlags": "0",
+    "size": 32100000000,
+    "dateAdded": "2024-07-01T10:00:00Z",
+    "languages": [{"id": 1, "name": "English"}]
+  },
+  "isUpgrade": true,
+  "downloadClient": "qBittorrent",
+  "downloadClientType": "qBittorrent",
+  "deletedFiles": [
+    {
+      "id": 902,
+      "relativePath": "Dune Part Two (2024) Bluray-1080p.mkv",
+      "path": "/data/Movies/Dune Part Two (2024)/Dune Part Two (2024) Bluray-1080p.mkv",
+      "quality": "Bluray-1080p",
+      "qualityVersion": 1,
+      "indexerFlags": "0",
+      "size": 14820000000,
+      "dateAdded": "2024-05-14T21:03:10Z",
+      "recycleBinPath": "/data/recycle/Dune Part Two (2024)/Dune Part Two (2024) Bluray-1080p.mkv"
+    }
+  ],
+  "eventType": "Download",
+  "instanceName": "Radarr",
+  "applicationUrl": ""
+}
