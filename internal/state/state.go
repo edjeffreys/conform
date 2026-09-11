@@ -3,7 +3,8 @@
 // The reconcile is otherwise stateless. Excuses exist only for files that
 // would never converge — ffmpeg cannot process them, or the re-encode comes
 // out larger — and are keyed on size and mtime, so a replaced file is judged
-// fresh.
+// fresh. A larger re-encode excuses only the encode: the file is still held to
+// everything a remux can do.
 //
 // The two are stored apart because they have different writers: one cache file
 // written by whatever scans, and one excuse file per media file written by
@@ -37,6 +38,8 @@ type Excuse struct {
 
 	Excused bool   `json:"excused,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	// Absent from records older than it, which then excuse the remux too.
+	EncodeOnly bool `json:"encodeOnly,omitempty"`
 }
 
 func (e *Excuse) describes(size int64, mod time.Time) bool {
@@ -125,6 +128,13 @@ func (s *Store) Reject(path string, size int64, mod time.Time, reason string) er
 	})
 }
 
+func (s *Store) ExcuseEncode(path string, size int64, mod time.Time, reason string) error {
+	return s.writeExcuse(&Excuse{
+		Path: path, Size: size, ModTime: mod,
+		LastAttempt: time.Now(), Excused: true, EncodeOnly: true, Reason: reason,
+	})
+}
+
 func (s *Store) Fail(path string, size int64, mod time.Time, detail string, maxFailures int) error {
 	e := s.Excuse(path, size, mod)
 	if e == nil {
@@ -134,7 +144,7 @@ func (s *Store) Fail(path string, size int64, mod time.Time, detail string, maxF
 	e.LastError = detail
 	e.LastAttempt = time.Now()
 	if maxFailures > 0 && e.Failures >= maxFailures {
-		e.Excused = true
+		e.Excused, e.EncodeOnly = true, false
 		e.Reason = fmt.Sprintf("failed %d times, last: %s", e.Failures, truncate(detail, 200))
 	}
 	return s.writeExcuse(e)
