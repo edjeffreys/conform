@@ -350,6 +350,17 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("profile %q constrains audio but sets no audio encoder", l.Profile)
 			}
 		}
+		if err := producesAcceptable(p.Video.Encoder.Name, p.Video.Codecs); err != nil {
+			return fmt.Errorf("profile %q video: %w", l.Profile, err)
+		}
+		if err := producesAcceptable(p.Audio.Encoder.Name, p.Audio.Codecs); err != nil {
+			return fmt.Errorf("profile %q audio: %w", l.Profile, err)
+		}
+		if sc := p.Audio.StereoCompanion; sc != nil {
+			if err := producesAcceptable(sc.Encoder.Name, p.Audio.Codecs); err != nil {
+				return fmt.Errorf("profile %q stereoCompanion: %w", l.Profile, err)
+			}
+		}
 	}
 
 	from := map[string]bool{}
