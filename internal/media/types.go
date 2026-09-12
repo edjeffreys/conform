@@ -50,16 +50,17 @@ type Stream struct {
 
 var depthSuffix = regexp.MustCompile(`(\d{2})(le|be)?$`)
 
-// BitDepth is 0 when the pixel format is unknown. The nv formats end in a
-// number that names chroma layout, not depth.
+// Zero is unknown. The number on an nv format is chroma layout, not depth.
 func (s Stream) BitDepth() int {
 	if s.PixFmt == "" {
 		return 0
 	}
-	if m := depthSuffix.FindStringSubmatch(s.PixFmt); m != nil && !strings.HasPrefix(s.PixFmt, "nv") {
-		if n, _ := strconv.Atoi(m[1]); n > 8 && n <= 16 {
-			return n
-		}
+	m := depthSuffix.FindStringSubmatch(s.PixFmt)
+	if m == nil || strings.HasPrefix(s.PixFmt, "nv") {
+		return 8
+	}
+	if n, _ := strconv.Atoi(m[1]); n > 8 && n <= 16 {
+		return n
 	}
 	return 8
 }

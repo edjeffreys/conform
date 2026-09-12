@@ -38,7 +38,7 @@ type Excuse struct {
 
 	Excused bool   `json:"excused,omitempty"`
 	Reason  string `json:"reason,omitempty"`
-	// Absent from records older than it, which then excuse the remux too.
+	// Records written before this field existed excuse the remux too.
 	EncodeOnly bool `json:"encodeOnly,omitempty"`
 }
 
@@ -56,10 +56,8 @@ type Store struct {
 }
 
 func Open(dir string) (*Store, error) {
-	// Renamed when media.File gains a field something reads, so entries probed
-	// without it are discarded rather than read as zero.
-	os.Remove(filepath.Join(dir, "probes.json"))
 	s := &Store{
+		// v2 added pix_fmt: older entries are re-probed, not read as unknown.
 		cachePath: filepath.Join(dir, "probes-v2.json"),
 		excuseDir: filepath.Join(dir, "excuses"),
 		probes:    map[string]*media.File{},
@@ -147,7 +145,8 @@ func (s *Store) Fail(path string, size int64, mod time.Time, detail string, maxF
 	e.LastError = detail
 	e.LastAttempt = time.Now()
 	if maxFailures > 0 && e.Failures >= maxFailures {
-		e.Excused, e.EncodeOnly = true, false
+		e.Excused = true
+		e.EncodeOnly = false
 		e.Reason = fmt.Sprintf("failed %d times, last: %s", e.Failures, truncate(detail, 200))
 	}
 	return s.writeExcuse(e)

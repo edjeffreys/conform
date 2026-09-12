@@ -40,8 +40,7 @@ type Result struct {
 	Before   int64
 	After    int64
 	Duration time.Duration
-	// Set when this run excused the encode and went on to remux, which is
-	// what Outcome then describes.
+	// Set when the encode was excused; Outcome then reports the remux after it.
 	Excused string
 }
 
@@ -68,8 +67,7 @@ func (r *Runner) logf(format string, args ...any) {
 // touches, including the ones it decides to leave alone; err is reserved for
 // faults that should stop the run, not for a file that could not be encoded.
 //
-// excusedEncode is the reason for the file's excused encode when p was planned
-// against plan.CopyOnly because of it, and empty otherwise.
+// A non-empty excusedEncode means p was planned against plan.CopyOnly.
 func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile, excusedEncode string) (Result, error) {
 	src := p.File.Path
 	res := Result{Path: src, Action: p.Action, Before: p.File.Size}
@@ -153,7 +151,7 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile, e
 	res.Path = final
 	res.Duration = time.Since(start)
 	if excusedEncode != "" {
-		// Keyed on the old size and mtime, the next pass would encode it again.
+		// The remux changed the size and mtime the excuse was keyed on.
 		if err := r.excuseEncode(final, excusedEncode); err != nil {
 			res.Detail = fmt.Sprintf("the excused encode was not carried to the remuxed file: %v", err)
 		}

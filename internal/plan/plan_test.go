@@ -558,10 +558,11 @@ func TestFFmpegArgsAreDeterministic(t *testing.T) {
 }
 
 func TestCopyOnlyNeverEncodes(t *testing.T) {
+	byLanguage := []string{config.OrderLanguage}
 	profiles := map[string]config.Profile{
 		"standard":  profile(),
 		"companion": withCompanion(profile()),
-		"ordered":   ordered([]string{config.OrderLanguage, config.OrderChannels}, []string{config.OrderLanguage}),
+		"ordered":   ordered([]string{config.OrderLanguage, config.OrderChannels}, byLanguage),
 	}
 	files := []*media.File{
 		file("mkv", vid("av1", 2160), aud("truehd", "eng", 8), aud("aac", "eng", 6)),
@@ -581,8 +582,11 @@ func TestCopyOnlyNeverEncodes(t *testing.T) {
 func TestCopyOnlyLeavesTheProfileAlone(t *testing.T) {
 	prof := withCompanion(profile())
 	CopyOnly(prof)
-	if len(prof.Video.Codecs) == 0 || prof.Audio.MaxChannels == 0 || prof.Audio.StereoCompanion == nil {
+	if len(prof.Video.Codecs) == 0 || prof.Audio.MaxChannels == 0 {
 		t.Errorf("CopyOnly changed the profile it was given: %+v", prof)
+	}
+	if prof.Audio.StereoCompanion == nil {
+		t.Error("CopyOnly removed the stereo companion from the profile it was given")
 	}
 }
 
@@ -621,10 +625,11 @@ func TestCopyOnlyKeepsTheRemuxWork(t *testing.T) {
 	}
 }
 
-// The remux is verified by re-planning against CopyOnly, so what it emits has
-// to come back none there, channels untouched.
+// The remux is verified by re-planning against CopyOnly, which judges the
+// channels a copy kept rather than the ones a downmix would have written.
 func TestCopyOnlyConverges(t *testing.T) {
-	prof := ordered([]string{config.OrderLanguage, config.OrderChannels}, []string{config.OrderLanguage})
+	byLanguage := []string{config.OrderLanguage}
+	prof := ordered([]string{config.OrderLanguage, config.OrderChannels}, byLanguage)
 	prof.Audio.Languages = []string{"eng", "und"}
 	before := file("mp4",
 		vid("av1", 2160),
@@ -637,25 +642,51 @@ func TestCopyOnlyConverges(t *testing.T) {
 
 	// What ffmpeg emits for that plan: the 8-channel stream first, since a
 	// copy keeps its channels, and the French track gone.
-	after := file("mkv", vid("av1", 2160), aud("truehd", "eng", 8), aud("eac3", "eng", 6), sub("subrip", "eng"))
+	after := file("mkv",
+		vid("av1", 2160),
+		aud("truehd", "eng", 8), aud("eac3", "eng", 6),
+		sub("subrip", "eng"),
+	)
 	if got := Build(after, CopyOnly(prof)); got.Action != ActionNone {
 		t.Fatalf("the remux still needs work (%s) — the fallback would reject its own output", got)
 	}
 }
 
-// An upload has to happen whether or not the frame is scaled.
 func TestEncoderFilterRunsBeforeTheScale(t *testing.T) {
-	prof := profile()
-	prof.Video.Encoder.Filter = "format=nv12|vaapi,hwupload"
-	prof.Video.ScaleFilter = "scale_vaapi=w={width}:h={height}"
+	upload := profile()
+	upload.Video.Encoder.Filter = "format=nv12|vaapi,hwupload"
+	upload.Video.ScaleFilter = "scale_vaapi=w={width}:h={height}"
 
-	if got := Build(file("mkv", vid("h264", 2160)), prof).Streams[0].Filter; got != "format=nv12|vaapi,hwupload,scale_vaapi=w=-2:h=1080" {
-		t.Errorf("downscale filter = %q", got)
+	tests := []struct {
+		name string
+		file *media.File
+		prof config.Profile
+		want string
+	}{
+		{
+			name: "scaled",
+			file: file("mkv", vid("h264", 2160)),
+			prof: upload,
+			want: "format=nv12|vaapi,hwupload,scale_vaapi=w=-2:h=1080",
+		},
+		{
+			name: "not scaled",
+			file: file("mkv", vid("h264", 1080)),
+			prof: upload,
+			want: "format=nv12|vaapi,hwupload",
+		},
+		{
+			name: "no encoder filter",
+			file: file("mkv", vid("h264", 1080)),
+			prof: profile(),
+			want: "",
+		},
 	}
-	if got := Build(file("mkv", vid("h264", 1080)), prof).Streams[0].Filter; got != "format=nv12|vaapi,hwupload" {
-		t.Errorf("filter without a scale = %q", got)
-	}
-	if got := Build(file("mkv", vid("h264", 1080)), profile()).Streams[0].Filter; got != "" {
-		t.Errorf("no encoder filter still produced %q", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Build(tc.file, tc.prof).Streams[0].Filter; got != tc.want {
+				t.Errorf("filter = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

@@ -212,138 +212,66 @@ that write by its replica count.
 
 ### Encoders
 
-conform picks no encoder and no quality for you: `encoder` names an ffmpeg
-encoder and the options it takes, and they are used verbatim. What follows is a
-set of starting points, not defaults. The numbers are placeholders to tune
-against your own library.
-
-Every hardware block has the same four parts:
-
-- **`inputArgs`** create a named device, decode onto it where the GPU can, and
-  hand the filters that same device.
-- **`encoder.filter`** runs on every encoded frame: `format=nv12|p010le|<frames>,hwupload`.
-  Frames the GPU decoded pass straight through `hwupload`, and frames it could
-  not decode — a codec it has no decoder for — are decoded in software and
-  uploaded, so those files still encode rather than fail.
-- **Both `nv12` and `p010le`**, so the upload keeps the source's bit depth. An
-  encoder that cannot write 10-bit negotiates it down to 8, and the
-  [bit-depth check](#replacing-a-file) rejects that encode rather than
-  committing it.
-- **`scaleFilter`** scales on the device, so frames are not downloaded around
-  every resize.
-
-<details>
-<summary><b>VAAPI — Intel and AMD on Linux</b></summary>
+`encoder` names an ffmpeg encoder and the options it takes, used verbatim.
+conform chooses neither the encoder nor its quality. A hardware encoder needs
+four pieces, shown here for VAAPI:
 
 ```yaml
 video:
   codecs: [hevc]
   scaleFilter: "scale_vaapi=w={width}:h={height}"
   encoder:
-    name: hevc_vaapi              # or h264_vaapi, av1_vaapi
-    inputArgs: [-init_hw_device, "vaapi=conform:/dev/dri/renderD128", -filter_hw_device, conform,
-                -hwaccel, vaapi, -hwaccel_output_format, vaapi, -hwaccel_device, conform]
+    name: hevc_vaapi
+    inputArgs: [-init_hw_device, "vaapi=conform:/dev/dri/renderD128",
+                -filter_hw_device, conform, -hwaccel, vaapi,
+                -hwaccel_output_format, vaapi, -hwaccel_device, conform]
     filter: "format=nv12|p010le|vaapi,hwupload"
-    options: {global_quality: "22"}   # lower is higher quality; av1_vaapi uses 0–255
+    options: {global_quality: "22"}
 ```
 
-</details>
+- **`inputArgs`** create a named device and decode onto it where the GPU can.
+- **`filter`** runs on every encoded frame. `hwupload` passes GPU-decoded
+  frames through and uploads the rest, so a codec the GPU cannot decode still
+  encodes.
+- **`nv12|p010le`** keeps the source's bit depth. An encoder that cannot write
+  10-bit negotiates it down, and [verification](#replacing-a-file) rejects the
+  result.
+- **`scaleFilter`** scales on the device rather than downloading every frame.
 
-<details>
-<summary><b>QuickSync</b></summary>
+The other APIs differ only in names:
 
-```yaml
-video:
-  codecs: [hevc]
-  scaleFilter: "scale_qsv=w={width}:h={height}"
-  encoder:
-    name: hevc_qsv                # or h264_qsv, av1_qsv
-    inputArgs: [-init_hw_device, "qsv=conform:hw_any,child_device=/dev/dri/renderD128", -filter_hw_device, conform,
-                -hwaccel, qsv, -hwaccel_output_format, qsv, -hwaccel_device, conform]
-    filter: "format=nv12|p010le|qsv,hwupload=extra_hw_frames=64"
-    options: {global_quality: "22"}   # lower is higher quality
-```
+| API | `-init_hw_device` | frames | scale | quality |
+|---|---|---|---|---|
+| VAAPI | `vaapi=conform:/dev/dri/renderD128` | `vaapi` | `scale_vaapi` | `global_quality`, lower is better |
+| QuickSync | `qsv=conform:hw_any,child_device=/dev/dri/renderD128` | `qsv` | `scale_qsv` | `global_quality`, lower is better |
+| NVENC | `cuda=conform:0` | `cuda` | `scale_cuda` | `cq` with `rc: vbr` and `b: "0"`, lower is better |
+| VideoToolbox | `videotoolbox=conform` | `videotoolbox_vld` | `scale_vt` | `q`, 1–100, higher is better |
 
-</details>
+`-hwaccel` takes the API name, `cuda` for NVENC. QuickSync's upload wants
+`hwupload=extra_hw_frames=64`. A software encoder needs none of it: `libx265`
+or `libsvtav1` with a `crf`, and the default `scaleFilter`.
 
-<details>
-<summary><b>NVENC</b></summary>
+Only VideoToolbox and the software encoders have been run end to end here, on
+8-bit, 10-bit and GPU-undecodable sources. `h264_videotoolbox` always writes
+8-bit, so a 10-bit source is excused with it.
 
-```yaml
-video:
-  codecs: [hevc]
-  scaleFilter: "scale_cuda=w={width}:h={height}"
-  encoder:
-    name: hevc_nvenc              # or h264_nvenc, av1_nvenc
-    inputArgs: [-init_hw_device, "cuda=conform:0", -filter_hw_device, conform,
-                -hwaccel, cuda, -hwaccel_output_format, cuda, -hwaccel_device, conform]
-    filter: "format=nv12|p010le|cuda,hwupload"
-    options: {rc: vbr, cq: "24", b: "0"}   # constant quality; lower cq is higher quality
-```
-
-</details>
-
-<details>
-<summary><b>VideoToolbox — macOS</b></summary>
-
-```yaml
-video:
-  codecs: [hevc]
-  scaleFilter: "scale_vt=w={width}:h={height}"
-  encoder:
-    name: hevc_videotoolbox
-    inputArgs: [-init_hw_device, videotoolbox=conform, -filter_hw_device, conform,
-                -hwaccel, videotoolbox, -hwaccel_output_format, videotoolbox_vld, -hwaccel_device, conform]
-    filter: "format=nv12|p010le|videotoolbox_vld,hwupload"
-    options: {q: "65"}            # 1–100, higher is higher quality
-```
-
-`h264_videotoolbox` writes 8-bit whatever it is given, so a 10-bit source is
-excused with it rather than downsampled.
-
-</details>
-
-<details>
-<summary><b>Software</b></summary>
-
-```yaml
-video:
-  codecs: [hevc]
-  scaleFilter: "scale=-2:{height}"
-  encoder:
-    name: libx265
-    options: {crf: "22", preset: medium, x265-params: "log-level=error"}   # lower crf is higher quality
-```
-
-`libsvtav1` takes `crf` on a 0–63 scale; `libx264` takes `crf` like `libx265`.
-x265's `log-level=error` keeps its own banner from burying the error a failed
-encode reports.
-
-</details>
-
-The VideoToolbox, `libx265` and `libsvtav1` blocks have been run end to end,
-on 8-bit and 10-bit sources and on a source the GPU cannot decode. The VAAPI,
-QuickSync and NVENC blocks follow the same pattern but have not been run here —
-try one file with `-limit 1 -verbose` first.
-
-To share a block between profiles, anchor it on the first and merge it into the
-next; anything set alongside the merge overrides it:
+A YAML anchor shares a block between profiles; keys set beside the merge
+override it:
 
 ```yaml
 profiles:
   movies:
     video: &vaapi
       codecs: [hevc]
-      encoder: {name: hevc_vaapi, ...}
+      encoder: {name: hevc_vaapi}
   tv:
     video:
       <<: *vaapi
       maxHeight: 1080
 ```
 
-A profile whose encoder writes a codec its own `codecs` rule rejects — `codecs:
-[av1]` with `hevc_vaapi`, say — is refused at load. It would otherwise re-encode
-every file and have every output rejected as not conforming.
+A profile whose encoder writes a codec its own `codecs` rule rejects, such as
+`hevc_vaapi` under `codecs: [av1]`, is refused at load.
 
 <details>
 <summary><b>QuickSync and older Intel silicon</b></summary>

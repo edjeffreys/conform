@@ -225,10 +225,11 @@ func TestLostDepth(t *testing.T) {
 	video := func(i int, codec, pix string) media.Stream {
 		return media.Stream{Index: i, Type: media.Video, Codec: codec, PixFmt: pix}
 	}
-	poster := media.Stream{Index: 0, Type: media.Video, Codec: "mjpeg", PixFmt: "yuvj420p", AttachedPic: true}
+	poster := media.Stream{Type: media.Video, Codec: "mjpeg", AttachedPic: true}
 	encode := func(source int) plan.StreamPlan {
 		return plan.StreamPlan{Source: source, Type: media.Video, Codec: "hevc_vaapi"}
 	}
+	copied := plan.StreamPlan{Type: media.Video, Codec: plan.Copy}
 
 	tests := []struct {
 		name   string
@@ -237,24 +238,46 @@ func TestLostDepth(t *testing.T) {
 		output []media.Stream
 		lost   bool
 	}{
-		{"10-bit encoded down to 8", []media.Stream{video(0, "h264", "yuv420p10le")},
-			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p")}, true},
-		{"10-bit kept", []media.Stream{video(0, "h264", "yuv420p10le")},
-			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "p010le")}, false},
-		{"8-bit kept", []media.Stream{video(0, "h264", "yuv420p")},
-			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p")}, false},
-		{"8-bit raised to 10 is not a loss", []media.Stream{video(0, "h264", "yuv420p")},
-			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p10le")}, false},
-		// A cached probe from before pix_fmt was recorded says nothing either way.
-		{"unknown source depth", []media.Stream{video(0, "h264", "")},
-			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p")}, false},
-		{"copied stream", []media.Stream{video(0, "hevc", "yuv420p10le")},
-			[]plan.StreamPlan{{Source: 0, Type: media.Video, Codec: plan.Copy}}, []media.Stream{video(0, "hevc", "yuv420p")}, false},
-		// Matroska writes the poster as an attachment, which the probe drops, so
-		// pairing by position alone would compare the video with nothing.
-		{"cover art before the video", []media.Stream{poster, video(1, "h264", "yuv420p10le")},
-			[]plan.StreamPlan{{Source: 0, Type: media.Video, Codec: plan.Copy}, encode(1)},
-			[]media.Stream{video(0, "hevc", "yuv420p")}, true},
+		{
+			name:   "10-bit encoded down to 8",
+			source: []media.Stream{video(0, "h264", "yuv420p10le")},
+			plans:  []plan.StreamPlan{encode(0)},
+			output: []media.Stream{video(0, "hevc", "yuv420p")},
+			lost:   true,
+		},
+		{
+			name:   "10-bit kept",
+			source: []media.Stream{video(0, "h264", "yuv420p10le")},
+			plans:  []plan.StreamPlan{encode(0)},
+			output: []media.Stream{video(0, "hevc", "p010le")},
+		},
+		{
+			name:   "8-bit raised to 10",
+			source: []media.Stream{video(0, "h264", "yuv420p")},
+			plans:  []plan.StreamPlan{encode(0)},
+			output: []media.Stream{video(0, "hevc", "yuv420p10le")},
+		},
+		{
+			name:   "unknown source depth",
+			source: []media.Stream{video(0, "h264", "")},
+			plans:  []plan.StreamPlan{encode(0)},
+			output: []media.Stream{video(0, "hevc", "yuv420p")},
+		},
+		{
+			name:   "copied stream",
+			source: []media.Stream{video(0, "hevc", "yuv420p10le")},
+			plans:  []plan.StreamPlan{copied},
+			output: []media.Stream{video(0, "hevc", "yuv420p")},
+		},
+		{
+			// Matroska stores the poster as an attachment, which the probe drops,
+			// so pairing streams by position alone would miss the loss.
+			name:   "cover art before the video",
+			source: []media.Stream{poster, video(1, "h264", "yuv420p10le")},
+			plans:  []plan.StreamPlan{copied, encode(1)},
+			output: []media.Stream{video(0, "hevc", "yuv420p")},
+			lost:   true,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

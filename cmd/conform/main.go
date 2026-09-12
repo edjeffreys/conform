@@ -144,7 +144,7 @@ type item struct {
 	lib  config.Library
 	prof config.Profile
 	plan *plan.Plan
-	// Why the file's encode is excused, when prof is plan.CopyOnly because of it.
+
 	excusedEncode string
 }
 
