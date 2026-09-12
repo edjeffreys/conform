@@ -5,7 +5,23 @@
   "semanticCommits": "enabled",
   "semanticCommitType": "chore",
   "semanticCommitScope": "deps",
+  "customManagers": [
+    {
+      "description": "The Dockerfile's base image versions live in annotated ARGs; the dockerfile manager reads them through FROM but cannot write back, so these are updated here instead.",
+      "customType": "regex",
+      "managerFilePatterns": ["/(^|/)Dockerfile$/"],
+      "matchStrings": [
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\nARG \\w+=(?<currentValue>\\S+)"
+      ]
+    }
+  ],
   "packageRules": [
+    {
+      "description": "Covered by the ARG custom manager; left on, the dockerfile manager proposes an update it cannot apply and reopens the PR after every merge.",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["golang", "debian"],
+      "enabled": false
+    },
     {
       "description": "The Dockerfile's Go version and go.mod must move together, or the image builds against a toolchain the module does not declare.",
       "matchPackageNames": ["golang", "go"],
