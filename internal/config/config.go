@@ -136,6 +136,9 @@ type Encoder struct {
 	Options map[string]string `yaml:"options"`
 	// InputArgs are placed before -i, for hardware decode setup.
 	InputArgs []string `yaml:"inputArgs"`
+	// Filter runs on every encoded frame, before any scale — where a hardware
+	// encoder uploads frames the GPU could not decode.
+	Filter string `yaml:"filter"`
 }
 
 type Execution struct {

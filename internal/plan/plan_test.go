@@ -642,3 +642,20 @@ func TestCopyOnlyConverges(t *testing.T) {
 		t.Fatalf("the remux still needs work (%s) — the fallback would reject its own output", got)
 	}
 }
+
+// An upload has to happen whether or not the frame is scaled.
+func TestEncoderFilterRunsBeforeTheScale(t *testing.T) {
+	prof := profile()
+	prof.Video.Encoder.Filter = "format=nv12|vaapi,hwupload"
+	prof.Video.ScaleFilter = "scale_vaapi=w={width}:h={height}"
+
+	if got := Build(file("mkv", vid("h264", 2160)), prof).Streams[0].Filter; got != "format=nv12|vaapi,hwupload,scale_vaapi=w=-2:h=1080" {
+		t.Errorf("downscale filter = %q", got)
+	}
+	if got := Build(file("mkv", vid("h264", 1080)), prof).Streams[0].Filter; got != "format=nv12|vaapi,hwupload" {
+		t.Errorf("filter without a scale = %q", got)
+	}
+	if got := Build(file("mkv", vid("h264", 1080)), profile()).Streams[0].Filter; got != "" {
+		t.Errorf("no encoder filter still produced %q", got)
+	}
+}

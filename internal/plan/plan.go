@@ -194,12 +194,17 @@ func planVideo(s media.Stream, rules config.VideoRules, p *Plan) StreamPlan {
 	sp.Options = copyOptions(rules.Encoder.Options)
 	sp.Reason = strings.Join(why, ", ")
 	p.InputArgs = rules.Encoder.InputArgs
+	var filters []string
+	if rules.Encoder.Filter != "" {
+		filters = append(filters, rules.Encoder.Filter)
+	}
 	if downscale {
-		sp.Filter = strings.NewReplacer(
+		filters = append(filters, strings.NewReplacer(
 			"{height}", strconv.Itoa(rules.MaxHeight),
 			"{width}", "-2",
-		).Replace(rules.ScaleFilter)
+		).Replace(rules.ScaleFilter))
 	}
+	sp.Filter = strings.Join(filters, ",")
 	p.Reasons = append(p.Reasons, "video: "+sp.Reason)
 	return sp
 }
