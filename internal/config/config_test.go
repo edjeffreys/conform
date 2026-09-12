@@ -48,6 +48,12 @@ func TestLoadNormalises(t *testing.T) {
 }
 
 func TestLoadRejects(t *testing.T) {
+	companion := valid + `    audio:
+      codecs: [eac3]
+      encoder: {name: eac3}
+      stereoCompanion:
+        encoder: {name: aac}
+`
 	tests := map[string]string{
 		"undefined profile": strings.Replace(valid, "profile: standard", "profile: nope", 1),
 		// Constraining video with no encoder plans a transcode it cannot emit.
@@ -63,6 +69,9 @@ func TestLoadRejects(t *testing.T) {
 		"rewrite with no to":    valid + "webhook:\n  rewrite:\n    - from: /tv\n",
 		// Two targets for one prefix leave which applies to map order.
 		"rewrite given twice": valid + "webhook:\n  rewrite:\n    - {from: /tv, to: /data/TV}\n    - {from: /tv/, to: /media/TV}\n",
+		// Every file would be re-encoded and every output refused.
+		"encoder writes a rejected codec":   strings.Replace(valid, "{name: libx265}", "{name: av1_vaapi}", 1),
+		"companion writes a rejected codec": companion,
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -85,5 +94,21 @@ func TestLoadNewFileTriggers(t *testing.T) {
 	}
 	if want := (Rewrite{From: "/tv", To: "/data/TV"}); len(c.Webhook.Rewrite) != 1 || c.Webhook.Rewrite[0] != want {
 		t.Errorf("rewrite = %+v, want %+v", c.Webhook.Rewrite, want)
+	}
+}
+
+func TestLoadAcceptsEncoders(t *testing.T) {
+	noCodecs := strings.Replace(valid, "      codecs: [HEVC]\n", "", 1)
+	tests := map[string]string{
+		// The list cannot know every encoder, and must not refuse one it lacks.
+		"unknown encoder": strings.Replace(valid, "{name: libx265}", "{name: hevc_rkmpp}", 1),
+		"no codecs rule":  strings.Replace(noCodecs, "{name: libx265}", "{name: av1_vaapi}", 1),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(t, body); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }

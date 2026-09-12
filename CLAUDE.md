@@ -86,10 +86,10 @@ internal/
 
 ## Testing
 
-`go test ./...`. `media` has no tests, because it shells out; `run` is tested
-only where it does not. Prefer growing the table tests in `plan/plan_test.go` —
-the planner is where correctness actually lives, and it is pure, so it is cheap
-to test exhaustively.
+`go test ./...`. `media` and `run` are tested only where they do not shell
+out. Prefer growing the table tests in `plan/plan_test.go` — the planner is
+where correctness actually lives, and it is pure, so it is cheap to test
+exhaustively.
 
 A webhook mapper is held to its contract by real payloads under
 `internal/webhook/testdata/<name>/`, not by hand-written cases; its

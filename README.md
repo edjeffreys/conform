@@ -210,6 +210,69 @@ Don't point it at replicated network storage — a transcode writes a full
 working copy of everything it processes, and a replicated volume multiplies
 that write by its replica count.
 
+### Encoders
+
+`encoder` names an ffmpeg encoder and the options it takes, used verbatim.
+conform chooses neither the encoder nor its quality. A hardware encoder needs
+four pieces, shown here for VAAPI:
+
+```yaml
+video:
+  codecs: [hevc]
+  scaleFilter: "scale_vaapi=w={width}:h={height}"
+  encoder:
+    name: hevc_vaapi
+    inputArgs: [-init_hw_device, "vaapi=conform:/dev/dri/renderD128",
+                -filter_hw_device, conform, -hwaccel, vaapi,
+                -hwaccel_output_format, vaapi, -hwaccel_device, conform]
+    filter: "format=nv12|p010le|vaapi,hwupload"
+    options: {global_quality: "22"}
+```
+
+- **`inputArgs`** create a named device and decode onto it where the GPU can.
+- **`filter`** runs on every encoded frame. `hwupload` passes GPU-decoded
+  frames through and uploads the rest, so a codec the GPU cannot decode still
+  encodes.
+- **`nv12|p010le`** keeps the source's bit depth. An encoder that cannot write
+  10-bit negotiates it down, and [verification](#replacing-a-file) rejects the
+  result.
+- **`scaleFilter`** scales on the device rather than downloading every frame.
+
+The other APIs differ only in names:
+
+| API | `-init_hw_device` | frames | scale | quality |
+|---|---|---|---|---|
+| VAAPI | `vaapi=conform:/dev/dri/renderD128` | `vaapi` | `scale_vaapi` | `global_quality`, lower is better |
+| QuickSync | `qsv=conform:hw_any,child_device=/dev/dri/renderD128` | `qsv` | `scale_qsv` | `global_quality`, lower is better |
+| NVENC | `cuda=conform:0` | `cuda` | `scale_cuda` | `cq` with `rc: vbr` and `b: "0"`, lower is better |
+| VideoToolbox | `videotoolbox=conform` | `videotoolbox_vld` | `scale_vt` | `q`, 1–100, higher is better |
+
+`-hwaccel` takes the API name, `cuda` for NVENC. QuickSync's upload wants
+`hwupload=extra_hw_frames=64`. A software encoder needs none of it: `libx265`
+or `libsvtav1` with a `crf`, and the default `scaleFilter`.
+
+Only VideoToolbox and the software encoders have been run end to end here, on
+8-bit, 10-bit and GPU-undecodable sources. `h264_videotoolbox` always writes
+8-bit, so a 10-bit source is excused with it.
+
+A YAML anchor shares a block between profiles; keys set beside the merge
+override it:
+
+```yaml
+profiles:
+  movies:
+    video: &vaapi
+      codecs: [hevc]
+      encoder: {name: hevc_vaapi}
+  tv:
+    video:
+      <<: *vaapi
+      maxHeight: 1080
+```
+
+A profile whose encoder writes a codec its own `codecs` rule rejects, such as
+`hevc_vaapi` under `codecs: [av1]`, is refused at load.
+
 <details>
 <summary><b>QuickSync and older Intel silicon</b></summary>
 
@@ -298,6 +361,9 @@ untouched, and `channels` settles after one downmix.
   subtitles, and `[eng, und]` keeps them. The "matched nothing, keep
   everything" fallback is audio-only: a file whose subtitles are all mis-tagged
   loses them, where a file whose audio is mis-tagged does not.
+- **An encode may never lower the bit depth.** A profile that deliberately
+  writes 8-bit — `pix_fmt: yuv420p` for an old player, say — has its 10-bit
+  sources excused rather than converted.
 - **Size is only checked on a re-encode that adds nothing.** A remux can grow
   from container overhead alone, and a profile asking for an extra track means
   the file to grow. The check catches a re-encode that got bigger for nothing.
@@ -313,14 +379,17 @@ straight from it would not be.
 A container change writes the new extension and removes the old file
 afterwards, so a crash in between leaves two copies rather than none.
 
-Verification is three checks, all of which must pass:
+Verification is four checks, all of which must pass:
 
 1. the output probes cleanly;
 2. its duration is at least `minDurationRatio` of the source — ffmpeg exits 0
    after writing a truncated file more often than it reports an error;
-3. re-planning the output returns `none`.
+3. no encoded video stream has fewer bits per sample than its source — some
+   encoders accept 10-bit frames and quietly write 8-bit, which every other
+   check passes;
+4. re-planning the output returns `none`.
 
-Check 3 is the important one. It is direct proof that the file now conforms,
+Check 4 is the important one. It is direct proof that the file now conforms,
 and therefore that the next pass will leave it alone. If it fails, the profile
 is unsatisfiable rather than the file being bad, and the message says so.
 

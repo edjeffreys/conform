@@ -40,8 +40,7 @@ type Result struct {
 	Before   int64
 	After    int64
 	Duration time.Duration
-	// Set when this run excused the encode and went on to remux, which is
-	// what Outcome then describes.
+	// Set when the encode was excused; Outcome then reports the remux after it.
 	Excused string
 }
 
@@ -68,8 +67,7 @@ func (r *Runner) logf(format string, args ...any) {
 // touches, including the ones it decides to leave alone; err is reserved for
 // faults that should stop the run, not for a file that could not be encoded.
 //
-// excusedEncode is the reason for the file's excused encode when p was planned
-// against plan.CopyOnly because of it, and empty otherwise.
+// A non-empty excusedEncode means p was planned against plan.CopyOnly.
 func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile, excusedEncode string) (Result, error) {
 	src := p.File.Path
 	res := Result{Path: src, Action: p.Action, Before: p.File.Size}
@@ -153,7 +151,7 @@ func (r *Runner) Apply(ctx context.Context, p *plan.Plan, prof config.Profile, e
 	res.Path = final
 	res.Duration = time.Since(start)
 	if excusedEncode != "" {
-		// Keyed on the old size and mtime, the next pass would encode it again.
+		// The remux changed the size and mtime the excuse was keyed on.
 		if err := r.excuseEncode(final, excusedEncode); err != nil {
 			res.Detail = fmt.Sprintf("the excused encode was not carried to the remuxed file: %v", err)
 		}
@@ -177,6 +175,10 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 		}
 	}
 
+	if detail := lostDepth(p, out); detail != "" {
+		return detail, false
+	}
+
 	if again := plan.Build(out, prof); again.Action != plan.ActionNone {
 		return fmt.Sprintf("output still does not satisfy the profile (%s) — the profile is likely unsatisfiable, not the file", again), false
 	}
@@ -197,6 +199,44 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 		}
 	}
 	return "", true
+}
+
+// Some encoders accept 10-bit frames and quietly write 8-bit, which every other
+// check passes: the codec, duration and size all come out right.
+func lostDepth(p *plan.Plan, out *media.File) string {
+	var encoded []plan.StreamPlan
+	for _, sp := range p.Streams {
+		if sp.Type == media.Video && !plan.CoverArt(source(p.File, sp.Source)) {
+			encoded = append(encoded, sp)
+		}
+	}
+	// Matroska turns cover art into an attachment, so only real video pairs up.
+	var written []media.Stream
+	for _, s := range out.Of(media.Video) {
+		if !plan.CoverArt(s) {
+			written = append(written, s)
+		}
+	}
+
+	for i, sp := range encoded {
+		if sp.Codec == plan.Copy || i >= len(written) {
+			continue
+		}
+		was, now := source(p.File, sp.Source).BitDepth(), written[i].BitDepth()
+		if was > 0 && now > 0 && now < was {
+			return fmt.Sprintf("video:%d is %d-bit against a %d-bit source", i, now, was)
+		}
+	}
+	return ""
+}
+
+func source(f *media.File, index int) media.Stream {
+	for _, s := range f.Streams {
+		if s.Index == index {
+			return s
+		}
+	}
+	return media.Stream{}
 }
 
 // Staged in the source's own directory so the commit is a rename within one

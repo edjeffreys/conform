@@ -36,6 +36,7 @@ type rawStream struct {
 	CodecName   string            `json:"codec_name"`
 	CodecType   string            `json:"codec_type"`
 	Profile     string            `json:"profile"`
+	PixFmt      string            `json:"pix_fmt"`
 	Width       int               `json:"width"`
 	Height      int               `json:"height"`
 	Channels    int               `json:"channels"`
@@ -87,6 +88,7 @@ func (p *Prober) Probe(ctx context.Context, path string) (*File, error) {
 			Type:        rs.CodecType,
 			Codec:       rs.CodecName,
 			Profile:     rs.Profile,
+			PixFmt:      rs.PixFmt,
 			Language:    language(rs.Tags),
 			Title:       rs.Tags["title"],
 			Width:       rs.Width,

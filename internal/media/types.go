@@ -3,6 +3,8 @@
 package media
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,6 +32,7 @@ type Stream struct {
 	Type     string `json:"type"`
 	Codec    string `json:"codec"`
 	Profile  string `json:"profile,omitempty"`
+	PixFmt   string `json:"pixFmt,omitempty"`
 	Language string `json:"language"`
 	Title    string `json:"title,omitempty"`
 
@@ -43,6 +46,23 @@ type Stream struct {
 
 	// AttachedPic marks cover art, which ffprobe reports as a video stream.
 	AttachedPic bool `json:"attachedPic,omitempty"`
+}
+
+var depthSuffix = regexp.MustCompile(`(\d{2})(le|be)?$`)
+
+// Zero is unknown. The number on an nv format is chroma layout, not depth.
+func (s Stream) BitDepth() int {
+	if s.PixFmt == "" {
+		return 0
+	}
+	m := depthSuffix.FindStringSubmatch(s.PixFmt)
+	if m == nil || strings.HasPrefix(s.PixFmt, "nv") {
+		return 8
+	}
+	if n, _ := strconv.Atoi(m[1]); n > 8 && n <= 16 {
+		return n
+	}
+	return 8
 }
 
 func (f *File) Of(kind string) []Stream {

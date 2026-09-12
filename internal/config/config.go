@@ -136,6 +136,8 @@ type Encoder struct {
 	Options map[string]string `yaml:"options"`
 	// InputArgs are placed before -i, for hardware decode setup.
 	InputArgs []string `yaml:"inputArgs"`
+	// Unlike scaleFilter, applied to every encoded frame, and ahead of it.
+	Filter string `yaml:"filter"`
 }
 
 type Execution struct {
@@ -348,6 +350,17 @@ func (c *Config) Validate() error {
 		if len(p.Audio.Codecs) > 0 || p.Audio.MaxChannels > 0 {
 			if p.Audio.Encoder.Name == "" {
 				return fmt.Errorf("profile %q constrains audio but sets no audio encoder", l.Profile)
+			}
+		}
+		if err := producesAcceptable(p.Video.Encoder.Name, p.Video.Codecs); err != nil {
+			return fmt.Errorf("profile %q video: %w", l.Profile, err)
+		}
+		if err := producesAcceptable(p.Audio.Encoder.Name, p.Audio.Codecs); err != nil {
+			return fmt.Errorf("profile %q audio: %w", l.Profile, err)
+		}
+		if sc := p.Audio.StereoCompanion; sc != nil {
+			if err := producesAcceptable(sc.Encoder.Name, p.Audio.Codecs); err != nil {
+				return fmt.Errorf("profile %q stereoCompanion: %w", l.Profile, err)
 			}
 		}
 	}

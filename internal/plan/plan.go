@@ -107,7 +107,7 @@ var stillImage = map[string]bool{
 	"png": true, "mjpeg": true, "gif": true, "bmp": true, "webp": true,
 }
 
-func coverArt(s media.Stream) bool {
+func CoverArt(s media.Stream) bool {
 	return s.AttachedPic || stillImage[s.Codec]
 }
 
@@ -118,7 +118,7 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	// every file with a poster as needing a re-encode of one still frame.
 	var realVideo []media.Stream
 	for _, s := range f.Streams {
-		if s.Type == media.Video && coverArt(s) {
+		if s.Type == media.Video && CoverArt(s) {
 			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy,
 				Language: s.Language, Reason: "cover art"})
 			continue
@@ -194,12 +194,17 @@ func planVideo(s media.Stream, rules config.VideoRules, p *Plan) StreamPlan {
 	sp.Options = copyOptions(rules.Encoder.Options)
 	sp.Reason = strings.Join(why, ", ")
 	p.InputArgs = rules.Encoder.InputArgs
+	var filters []string
+	if rules.Encoder.Filter != "" {
+		filters = append(filters, rules.Encoder.Filter)
+	}
 	if downscale {
-		sp.Filter = strings.NewReplacer(
+		filters = append(filters, strings.NewReplacer(
 			"{height}", strconv.Itoa(rules.MaxHeight),
 			"{width}", "-2",
-		).Replace(rules.ScaleFilter)
+		).Replace(rules.ScaleFilter))
 	}
+	sp.Filter = strings.Join(filters, ",")
 	p.Reasons = append(p.Reasons, "video: "+sp.Reason)
 	return sp
 }
