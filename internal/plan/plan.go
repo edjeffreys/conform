@@ -107,7 +107,7 @@ var stillImage = map[string]bool{
 	"png": true, "mjpeg": true, "gif": true, "bmp": true, "webp": true,
 }
 
-func coverArt(s media.Stream) bool {
+func CoverArt(s media.Stream) bool {
 	return s.AttachedPic || stillImage[s.Codec]
 }
 
@@ -118,7 +118,7 @@ func Build(f *media.File, prof config.Profile) *Plan {
 	// every file with a poster as needing a re-encode of one still frame.
 	var realVideo []media.Stream
 	for _, s := range f.Streams {
-		if s.Type == media.Video && coverArt(s) {
+		if s.Type == media.Video && CoverArt(s) {
 			p.Streams = append(p.Streams, StreamPlan{Source: s.Index, Type: s.Type, Codec: Copy,
 				Language: s.Language, Reason: "cover art"})
 			continue

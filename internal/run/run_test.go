@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/edjeffreys/conform/internal/media"
+	"github.com/edjeffreys/conform/internal/plan"
 )
 
 func write(t *testing.T, path, content string) {
@@ -217,5 +218,51 @@ func TestUnchangedCatchesASourceWrittenDuringTheEncode(t *testing.T) {
 	os.Remove(src)
 	if _, ok := unchanged(f); ok {
 		t.Error("a source that is gone reads as unchanged")
+	}
+}
+
+func TestLostDepth(t *testing.T) {
+	video := func(i int, codec, pix string) media.Stream {
+		return media.Stream{Index: i, Type: media.Video, Codec: codec, PixFmt: pix}
+	}
+	poster := media.Stream{Index: 0, Type: media.Video, Codec: "mjpeg", PixFmt: "yuvj420p", AttachedPic: true}
+	encode := func(source int) plan.StreamPlan {
+		return plan.StreamPlan{Source: source, Type: media.Video, Codec: "hevc_vaapi"}
+	}
+
+	tests := []struct {
+		name   string
+		source []media.Stream
+		plans  []plan.StreamPlan
+		output []media.Stream
+		lost   bool
+	}{
+		{"10-bit encoded down to 8", []media.Stream{video(0, "h264", "yuv420p10le")},
+			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p")}, true},
+		{"10-bit kept", []media.Stream{video(0, "h264", "yuv420p10le")},
+			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "p010le")}, false},
+		{"8-bit kept", []media.Stream{video(0, "h264", "yuv420p")},
+			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p")}, false},
+		{"8-bit raised to 10 is not a loss", []media.Stream{video(0, "h264", "yuv420p")},
+			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p10le")}, false},
+		// A cached probe from before pix_fmt was recorded says nothing either way.
+		{"unknown source depth", []media.Stream{video(0, "h264", "")},
+			[]plan.StreamPlan{encode(0)}, []media.Stream{video(0, "hevc", "yuv420p")}, false},
+		{"copied stream", []media.Stream{video(0, "hevc", "yuv420p10le")},
+			[]plan.StreamPlan{{Source: 0, Type: media.Video, Codec: plan.Copy}}, []media.Stream{video(0, "hevc", "yuv420p")}, false},
+		// Matroska writes the poster as an attachment, which the probe drops, so
+		// pairing by position alone would compare the video with nothing.
+		{"cover art before the video", []media.Stream{poster, video(1, "h264", "yuv420p10le")},
+			[]plan.StreamPlan{{Source: 0, Type: media.Video, Codec: plan.Copy}, encode(1)},
+			[]media.Stream{video(0, "hevc", "yuv420p")}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &plan.Plan{File: &media.File{Streams: tc.source}, Streams: tc.plans}
+			got := lostDepth(p, &media.File{Streams: tc.output})
+			if (got != "") != tc.lost {
+				t.Errorf("lostDepth = %q, want lost = %v", got, tc.lost)
+			}
+		})
 	}
 }

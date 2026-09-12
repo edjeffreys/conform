@@ -177,6 +177,10 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 		}
 	}
 
+	if detail := lostDepth(p, out); detail != "" {
+		return detail, false
+	}
+
 	if again := plan.Build(out, prof); again.Action != plan.ActionNone {
 		return fmt.Sprintf("output still does not satisfy the profile (%s) — the profile is likely unsatisfiable, not the file", again), false
 	}
@@ -197,6 +201,44 @@ func (r *Runner) verify(ctx context.Context, p *plan.Plan, prof config.Profile, 
 		}
 	}
 	return "", true
+}
+
+// Some encoders accept 10-bit frames and quietly write 8-bit, which every other
+// check passes: the codec, duration and size all come out right.
+func lostDepth(p *plan.Plan, out *media.File) string {
+	var encoded []plan.StreamPlan
+	for _, sp := range p.Streams {
+		if sp.Type == media.Video && !plan.CoverArt(source(p.File, sp.Source)) {
+			encoded = append(encoded, sp)
+		}
+	}
+	// Matroska turns cover art into an attachment, so only real video pairs up.
+	var written []media.Stream
+	for _, s := range out.Of(media.Video) {
+		if !plan.CoverArt(s) {
+			written = append(written, s)
+		}
+	}
+
+	for i, sp := range encoded {
+		if sp.Codec == plan.Copy || i >= len(written) {
+			continue
+		}
+		was, now := source(p.File, sp.Source).BitDepth(), written[i].BitDepth()
+		if was > 0 && now > 0 && now < was {
+			return fmt.Sprintf("video:%d is %d-bit against a %d-bit source", i, now, was)
+		}
+	}
+	return ""
+}
+
+func source(f *media.File, index int) media.Stream {
+	for _, s := range f.Streams {
+		if s.Index == index {
+			return s
+		}
+	}
+	return media.Stream{}
 }
 
 // Staged in the source's own directory so the commit is a rename within one
