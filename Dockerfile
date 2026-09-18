@@ -1,5 +1,5 @@
 # renovate: datasource=docker depName=golang
-ARG GO_VERSION=1.26.8
+ARG GO_VERSION=1.27.1
 # renovate: datasource=docker depName=debian
 ARG DEBIAN_VERSION=trixie-slim
 
