@@ -36,7 +36,7 @@ jobs:
       # Unpinned on purpose: the vulnerability database is live, so pinning buys no reproducibility.
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-      # Nothing else here runs Python, so a broken hook would only surface as a
-      # failing tool call mid-session.
-      - name: Check hooks parse
-        run: python3 -m py_compile .claude/hooks/*.py
+      # Otherwise a broken hook surfaces only mid-session, and the bump reviewer
+      # only on the next Renovate PR.
+      - name: Check Python parses
+        run: python3 -m py_compile .claude/hooks/*.py .github/scripts/*.py
