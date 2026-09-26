@@ -45,7 +45,7 @@ jobs:
           DESCRIBE_BUMPS: ${{ inputs.describe || vars.DESCRIBE_BUMPS || 'flagged' }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
-            python3 .github/scripts/review-dependency-bump.py --dry-run >> "$GITHUB_STEP_SUMMARY"
+            python3 .github/scripts/review-dependency-bump.py --dry-run | tee -a "$GITHUB_STEP_SUMMARY"
           else
             python3 .github/scripts/review-dependency-bump.py
           fi
