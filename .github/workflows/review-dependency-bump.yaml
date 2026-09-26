@@ -1,0 +1,34 @@
+name: Review dependency bump
+
+# Not a required check: a model outage or wrong verdict must never block a merge.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: review-dependency-bump-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Not pull_request_target: Renovate branches live in this repo, so the
+    # secret is available without exposing it to fork PRs.
+    if: github.event.pull_request.user.login == 'renovate[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Review and comment
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          # A repository variable, not a literal, so the describer can be turned
+          # down or off from the repo settings without a commit.
+          DESCRIBE_BUMPS: ${{ vars.DESCRIBE_BUMPS || 'flagged' }}
+        run: python3 .github/scripts/review-dependency-bump.py
