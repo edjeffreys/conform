@@ -5,20 +5,32 @@ name: Review dependency bump
 on:
   pull_request:
     types: [opened, synchronize, reopened]
+  # Re-reviews a past bump against the current tree, printing to the run summary.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number
+        required: true
+        type: number
+      describe:
+        description: DESCRIBE_BUMPS for this run
+        type: choice
+        options: [flagged, all, none]
+        default: all
 
 permissions:
   contents: read
   pull-requests: write
 
 concurrency:
-  group: review-dependency-bump-${{ github.event.pull_request.number }}
+  group: review-dependency-bump-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
 jobs:
   review:
     # Not pull_request_target: Renovate branches live in this repo, so the
     # secret is available without exposing it to fork PRs.
-    if: github.event.pull_request.user.login == 'renovate[bot]'
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.user.login == 'renovate[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,8 +39,13 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
           # A repository variable, not a literal, so the describer can be turned
           # down or off from the repo settings without a commit.
-          DESCRIBE_BUMPS: ${{ vars.DESCRIBE_BUMPS || 'flagged' }}
-        run: python3 .github/scripts/review-dependency-bump.py
+          DESCRIBE_BUMPS: ${{ inputs.describe || vars.DESCRIBE_BUMPS || 'flagged' }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            python3 .github/scripts/review-dependency-bump.py --dry-run >> "$GITHUB_STEP_SUMMARY"
+          else
+            python3 .github/scripts/review-dependency-bump.py
+          fi
